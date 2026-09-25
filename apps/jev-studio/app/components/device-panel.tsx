@@ -14,18 +14,47 @@ function AdbSnapshot({
   url: string;
   onConnection: (value: boolean) => void;
 }) {
-  const [source, setSource] = useState(url);
+  const [source, setSource] = useState('');
   useEffect(() => {
-    const refresh = () => {
-      if (!document.hidden) setSource(`${url}?t=${Date.now()}`);
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let objectUrl: string | undefined;
+    let stopped = false;
+
+    const poll = async () => {
+      if (stopped || !url) return;
+      try {
+        const response = await fetch(`${url}?t=${Date.now()}`, {
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error('Snapshot request failed.');
+        const blob = await response.blob();
+        if (stopped) return;
+        const nextUrl = URL.createObjectURL(blob);
+        const previousUrl = objectUrl;
+        objectUrl = nextUrl;
+        setSource(nextUrl);
+        if (previousUrl) URL.revokeObjectURL(previousUrl);
+      } catch {
+        if (!controller.signal.aborted) onConnection(false);
+      } finally {
+        if (!stopped && !controller.signal.aborted) timer = setTimeout(() => void poll(), 500);
+      }
     };
-    const timer = setInterval(refresh, 500);
-    return () => clearInterval(timer);
-  }, [url]);
+
+    void poll();
+    return () => {
+      stopped = true;
+      controller.abort();
+      if (timer) clearTimeout(timer);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [onConnection, url]);
   return (
     <img
       className="adb-snapshot"
-      src={source}
+      src={source || undefined}
       alt="Current ADB device screen"
       onLoad={() => onConnection(true)}
       onError={() => onConnection(false)}

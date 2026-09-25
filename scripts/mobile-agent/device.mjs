@@ -519,6 +519,71 @@ function parseUiAutomatorXml(output) {
   }
   return parseTree(parsed?.hierarchy);
 }
+function parseDisplaySize(value, label) {
+  const match = /(\d+)\s*[xX]\s*(\d+)/.exec(value);
+  if (!match) throw new Error(`ADB returned invalid ${label} display bounds.`);
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1)
+    throw new Error(`ADB returned invalid ${label} display bounds.`);
+  return { width, height };
+}
+
+function currentDisplaySize(windowText) {
+  const sections = windowText.split(/\n(?=\s*Display:\s*mDisplayId=)/);
+  const displaySections = sections.filter((section) => /^\s*Display:\s*mDisplayId=/.test(section));
+  const selected = displaySections.find((section) => /^\s*Display:\s*mDisplayId=0\b/.test(section));
+  if (!selected && displaySections.length > 1)
+    throw new Error('ADB dumpsys window returned ambiguous current display bounds.');
+
+  const section = selected || displaySections[0];
+  const values = [
+    ...(section || '').matchAll(/\b(?:current|cur|app)\s*(?:=|:)\s*(\d+)\s*[xX]\s*(\d+)/gi),
+  ].map((match) => ({ width: Number(match[1]), height: Number(match[2]) }));
+  const unique = new Map(values.map((value) => [`${value.width}x${value.height}`, value]));
+  if (unique.size > 1)
+    throw new Error('ADB dumpsys window returned ambiguous current display bounds.');
+  if (unique.size === 0) return null;
+  const size = [...unique.values()][0];
+  if (
+    !Number.isSafeInteger(size.width) ||
+    size.width < 1 ||
+    !Number.isSafeInteger(size.height) ||
+    size.height < 1
+  )
+    throw new Error('ADB dumpsys window returned invalid current display bounds.');
+  return size;
+}
+
+function wmDisplaySize(sizeText) {
+  const match =
+    sizeText.match(/Override size:\s*(\d+)\s*[xX]\s*(\d+)/) ||
+    sizeText.match(/Physical size:\s*(\d+)\s*[xX]\s*(\d+)/);
+  return match ? parseDisplaySize(match[0], 'screen') : null;
+}
+
+function assertTreeFitsScreen(tree, size) {
+  const root = tree.boundsInScreen || tree.children?.[0]?.boundsInScreen;
+  if (
+    !root ||
+    root.left !== 0 ||
+    root.top !== 0 ||
+    root.right !== size.width ||
+    root.bottom !== size.height
+  )
+    throw new Error('ADB UIAutomator bounds do not match the current display bounds.');
+  const visit = (node) => {
+    for (const child of node.children || []) {
+      if (
+        child.boundsInScreen &&
+        (child.boundsInScreen.right > size.width || child.boundsInScreen.bottom > size.height)
+      )
+        throw new Error('ADB UIAutomator bounds exceed the current display bounds.');
+      visit(child);
+    }
+  };
+  visit(tree);
+}
 
 export class AdbDevice {
   constructor({ serial, adbPath = 'adb', execFile: runner = execFileAsync } = {}) {
@@ -532,12 +597,13 @@ export class AdbDevice {
     this.installedApps = [];
   }
 
-  async run(args, mutation = false) {
+  async run(args, mutation = false, options = {}) {
     try {
       const [stdout] = await this.execFile(this.adbPath, ['-s', this.serial, ...args], {
         encoding: 'buffer',
         maxBuffer: 20 * 1024 * 1024,
         shell: false,
+        ...options,
       });
       const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
       if (mutation && /\b(error|exception|unknown command)\b/i.test(bytes.toString('utf8')))
@@ -568,18 +634,17 @@ export class AdbDevice {
       this.run(['exec-out', 'uiautomator', 'dump', '/dev/tty']),
     ]);
     const sizeText = sizeOutput.toString('utf8');
-    const size =
-      sizeText.match(/Override size:\s*(\d+)x(\d+)/) ||
-      sizeText.match(/Physical size:\s*(\d+)x(\d+)/);
-    if (!size) throw new Error('ADB returned invalid screen bounds.');
     const windowText = windowOutput.toString('utf8');
+    const size = currentDisplaySize(windowText) || wmDisplaySize(sizeText);
+    if (!size) throw new Error('ADB returned invalid screen bounds.');
     const foreground = windowText.match(
       /m(?:CurrentFocus|FocusedApp)[^\n]*?\s([A-Za-z0-9._]+)\/([^\s}]+)/,
     );
     const { tree, focusedInput } = parseUiAutomatorXml(xmlOutput);
+    assertTreeFitsScreen(tree, size);
     return summarizeState(
       {
-        device_context: { screen_bounds: { width: Number(size[1]), height: Number(size[2]) } },
+        device_context: { screen_bounds: size },
         phone_state: {
           packageName: foreground?.[1] || '',
           currentApp: foreground ? `${foreground[1]}/${foreground[2]}` : '',
@@ -611,7 +676,7 @@ export class AdbDevice {
   }
 
   async screenshot() {
-    const bytes = await this.run(['exec-out', 'screencap', '-p']);
+    const bytes = await this.run(['exec-out', 'screencap', '-p'], false, { timeout: 5_000 });
     if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE))
       throw new Error('ADB screenshot is not a PNG.');
     return bytes;

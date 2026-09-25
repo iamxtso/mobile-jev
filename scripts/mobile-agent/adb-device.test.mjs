@@ -48,22 +48,22 @@ function screen() {
   );
 }
 
-function fakeAdb({ onCall } = {}) {
+function fakeAdb({
+  onCall,
+  sizeText = 'Physical size: 400x800\n',
+  windowText = 'mCurrentFocus=Window{123 u0 com.example.app/.MainActivity}\n',
+  xmlText = xml,
+} = {}) {
   const calls = [];
   const runner = async (file, args, options) => {
     calls.push({ file, args, options });
     onCall?.(args);
     const command = args.slice(2).join(' ');
     if (command === 'get-state') return [Buffer.from('device\n'), Buffer.alloc(0)];
-    if (command === 'shell wm size')
-      return [Buffer.from('Physical size: 400x800\n'), Buffer.alloc(0)];
-    if (command === 'shell dumpsys window')
-      return [
-        Buffer.from('mCurrentFocus=Window{123 u0 com.example.app/.MainActivity}\n'),
-        Buffer.alloc(0),
-      ];
+    if (command === 'shell wm size') return [Buffer.from(sizeText), Buffer.alloc(0)];
+    if (command === 'shell dumpsys window') return [Buffer.from(windowText), Buffer.alloc(0)];
     if (command === 'exec-out uiautomator dump /dev/tty')
-      return [Buffer.from(xml), Buffer.alloc(0)];
+      return [Buffer.from(xmlText), Buffer.alloc(0)];
     if (command === 'shell pm list packages')
       return [
         Buffer.from('package:com.android.settings\npackage:com.example.app\n'),
@@ -103,6 +103,36 @@ test('UIAutomator XML becomes a deterministic normalized observation', async () 
   assert.equal(first.elements[0].resourceId, 'com.example.app:id/search');
   assert.equal(calls.length, 6);
   assert.ok(calls.every(({ options }) => options.shell === false));
+});
+test('ADB uses current landscape display bounds for coordinates and input', async () => {
+  const landscapeXml = xml.replace('[0,0][400,800]', '[0,0][1920,1080]');
+  const { device, calls } = fakeAdb({
+    sizeText: 'Physical size: 1080x2400\n',
+    windowText:
+      'Display: mDisplayId=0\n  init=1080x2400 cur=1920x1080 app=1920x1080\nmCurrentFocus=Window{123 u0 com.example.app/.MainActivity}\n',
+    xmlText: landscapeXml,
+  });
+  const observed = await device.observe();
+  assert.deepEqual(observed.screen, { width: 1920, height: 1080 });
+  await device.act({ type: 'tap', x: 1900, y: 1000 }, { expected: observed });
+  assert.deepEqual(calls.at(-1).args.slice(2), ['shell', 'input', 'tap', '1900', '1000']);
+});
+
+test('ADB uses wm size only when it matches UIAutomator bounds', async () => {
+  const { device } = fakeAdb();
+  assert.deepEqual((await device.observe()).screen, { width: 400, height: 800 });
+
+  const { device: rotated } = fakeAdb({
+    sizeText: 'Physical size: 1080x2400\n',
+    xmlText: xml.replace('[0,0][400,800]', '[0,0][1920,1080]'),
+  });
+  await assert.rejects(rotated.observe(), /bounds/);
+});
+
+test('ADB screenshot subprocess has a finite timeout', async () => {
+  const { device, calls } = fakeAdb();
+  await device.screenshot();
+  assert.equal(calls.at(-1).options.timeout, 5_000);
 });
 
 test('malformed UIAutomator XML fails as an ordinary read error', async () => {
