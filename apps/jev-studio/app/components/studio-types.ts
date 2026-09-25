@@ -1,13 +1,24 @@
 import { Smartphone, ArrowUpRight, Command } from 'lucide-react';
 
-export type Device = {
+export type MobilerunDevice = {
+  kind: 'mobilerun';
   id: string;
   name: string;
   state: string;
   streamUrl: string | null;
   streamToken: string | null;
-  environment: string;
+  environment: 'Cloud' | 'Staging';
+  control: 'remote';
 };
+export type AdbDevice = {
+  kind: 'adb';
+  id: string;
+  name: string;
+  state: string;
+  snapshotUrl: string | null;
+  control: 'disabled';
+};
+export type Device = MobilerunDevice | AdbDevice;
 export type Event = {
   type: 'decision' | 'action' | 'result' | 'error';
   at: number;

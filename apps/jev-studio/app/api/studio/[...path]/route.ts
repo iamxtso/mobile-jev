@@ -1,5 +1,8 @@
 import { studio, checkRequest, StudioError } from '../../../../server/store.mjs';
-import { MobilerunDevice } from '../../../../../../scripts/mobile-agent/device.mjs';
+import {
+  createAgentDevice,
+  deviceConfig,
+} from '../../../../../../scripts/mobile-agent/device-factory.mjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,21 +14,49 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     checkRequest(request);
     const { path } = await context.params;
     if (request.method === 'GET' && path.join('/') === 'device') {
-      const client = new MobilerunDevice();
+      const config = deviceConfig();
+      if (config.backend === 'adb') {
+        const client = createAgentDevice(config);
+        const d = await client.assertReady();
+        return json({
+          kind: 'adb',
+          id: d.id,
+          name: d.name,
+          state: d.state,
+          snapshotUrl: '/api/studio/device/snapshot',
+          control: 'disabled',
+        });
+      }
+      const client = createAgentDevice({ backend: 'mobilerun' });
       const d = await client.api(client.path());
       return json({
+        kind: 'mobilerun',
         id: d.id,
         name: d.name,
         state: d.state,
         streamUrl: d.streamUrl || null,
         streamToken: d.streamToken || null,
         environment: new URL(client.baseUrl).hostname.includes('staging') ? 'Staging' : 'Cloud',
+        control: 'remote',
+      });
+    }
+    if (request.method === 'GET' && path.join('/') === 'device/snapshot') {
+      const config = deviceConfig();
+      if (config.backend !== 'adb') throw new StudioError('Not found.', 404);
+      const bytes = await createAgentDevice(config).screenshot();
+      return new Response(bytes, {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' },
       });
     }
     if (request.method === 'GET' && path.join('/') === 'runs') return json(studio.list());
     if (request.method === 'POST' && path.join('/') === 'runs/clear') return json(studio.clear());
     if (request.method === 'POST' && path.join('/') === 'runs') {
-      if (!process.env.MOBILERUN_API_KEY && !process.env.MOBILERUN_CLOUD_API_KEY)
+      const config = deviceConfig();
+      if (
+        config.backend === 'mobilerun' &&
+        !process.env.MOBILERUN_API_KEY &&
+        !process.env.MOBILERUN_CLOUD_API_KEY
+      )
         throw new StudioError('Mobilerun credentials are missing on the server.', 503);
       if (!process.env.TYPESAFE_API_KEY)
         throw new StudioError('TypeSafe credentials are missing on the server.', 503);
@@ -81,7 +112,7 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
             ? error.message
             : error instanceof SyntaxError
               ? 'Invalid request.'
-              : 'Mobilerun is unavailable. Check your server configuration with pnpm doctor.',
+              : 'The configured device backend is unavailable. Check your server configuration with pnpm doctor.',
       },
       error instanceof StudioError ? error.status : error instanceof SyntaxError ? 400 : 502,
     );

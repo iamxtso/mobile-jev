@@ -1,4 +1,7 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { promisify } from 'node:util';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { curlRequest, decodeJson } from './http.mjs';
 import { prepareInputVerification } from './input-verification.mjs';
 
@@ -85,6 +88,132 @@ function integer(value, name, min = 0) {
     throw new Error(`${name} must be an integer >= ${min}.`);
 }
 
+async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, inputVerification) {
+  if (!action || typeof action !== 'object') throw new Error('An action object is required.');
+  if (performance.now() - device.readyAt > 30_000) await device.assertReady();
+  if (action.type === 'open-app') {
+    if (!device.installedApps.some((app) => app.packageName === action.packageName))
+      throw new Error('The app was not observed in the installed-app list.');
+    if (expected && expected.deviceId !== device.deviceId)
+      throw new Error('Observation belongs to a different device.');
+    await dispatch({ type: 'open-app', packageName: action.packageName });
+    return;
+  }
+
+  const current = await device.observe();
+  if (expected) assertFresh(current, expected, action, maxAgeMs);
+  const point = (x, y) => {
+    integer(x, 'x');
+    integer(y, 'y');
+    if (x >= current.screen.width || y >= current.screen.height)
+      throw new Error('Coordinates are outside the screen.');
+  };
+  let resolved;
+  switch (action.type) {
+    case 'tap':
+      point(action.x, action.y);
+      resolved = { type: 'tap', x: action.x, y: action.y };
+      break;
+    case 'tap-element': {
+      if (!expected) throw new Error('Element taps require their original observation.');
+      const node = current.elements.find((entry) => entry.id === action.elementId);
+      if (!node?.enabled || !(node.clickable || node.editable))
+        throw new Error('Element is not actionable.');
+      resolved = {
+        type: 'tap',
+        x: Math.floor((node.bounds.left + node.bounds.right) / 2),
+        y: Math.floor((node.bounds.top + node.bounds.bottom) / 2),
+      };
+      break;
+    }
+    case 'swipe':
+      point(action.startX, action.startY);
+      point(action.endX, action.endY);
+      integer(action.duration ?? 300, 'duration', 10);
+      resolved = {
+        type: 'swipe',
+        startX: action.startX,
+        startY: action.startY,
+        endX: action.endX,
+        endY: action.endY,
+        duration: action.duration ?? 300,
+      };
+      if (action.regionId && expected) {
+        const before = expected.elements.find((element) => element.id === action.regionId);
+        const after = current.elements.find((element) => element.id === action.regionId);
+        if (!before || !after) throw new Error('Swipe leaves its observed region.');
+        const project = (value, oldStart, oldEnd, newStart, newEnd) => {
+          const fraction = (value - oldStart) / (oldEnd - oldStart);
+          if (!Number.isFinite(fraction) || fraction < 0 || fraction >= 1)
+            throw new Error('Swipe leaves its observed region.');
+          return Math.floor(newStart + fraction * (newEnd - newStart));
+        };
+        resolved.startX = project(
+          action.startX,
+          before.bounds.left,
+          before.bounds.right,
+          after.bounds.left,
+          after.bounds.right,
+        );
+        resolved.endX = project(
+          action.endX,
+          before.bounds.left,
+          before.bounds.right,
+          after.bounds.left,
+          after.bounds.right,
+        );
+        resolved.startY = project(
+          action.startY,
+          before.bounds.top,
+          before.bounds.bottom,
+          after.bounds.top,
+          after.bounds.bottom,
+        );
+        resolved.endY = project(
+          action.endY,
+          before.bounds.top,
+          before.bounds.bottom,
+          after.bounds.top,
+          after.bounds.bottom,
+        );
+        point(resolved.startX, resolved.startY);
+        point(resolved.endX, resolved.endY);
+      }
+      break;
+    case 'type':
+      if (!current.phone.isEditable) throw new Error('Focus an editable field before typing.');
+      if (
+        typeof action.text !== 'string' ||
+        (action.clear !== undefined && typeof action.clear !== 'boolean')
+      )
+        throw new Error('Text must be a string and clear must be boolean.');
+      resolved = {
+        type: 'type',
+        text: action.text,
+        clear: action.clear ?? false,
+        inputVerification: prepareInputVerification(current, action),
+      };
+      break;
+    case 'clear':
+      if (!current.phone.isEditable) throw new Error('Focus an editable field before clearing.');
+      resolved = { type: 'clear' };
+      break;
+    case 'key':
+      if (!Object.hasOwn(KEYS, action.key)) throw new Error('Unsupported keyboard key.');
+      resolved = { type: 'key', key: action.key };
+      break;
+    case 'global':
+      if (!Object.hasOwn(GLOBAL_ACTIONS, action.name))
+        throw new Error('Unsupported global action.');
+      resolved = { type: 'global', name: action.name };
+      break;
+    default:
+      throw new Error('Unsupported action type.');
+  }
+  const receipt = inputVerification?.(current, action);
+  await dispatch(resolved);
+  return receipt ? { inputVerification: receipt } : undefined;
+}
 export function summarizeState(raw, deviceId) {
   const screen = raw?.device_context?.screen_bounds;
   if (
@@ -267,111 +396,293 @@ export class MobilerunDevice {
   }
 
   async act(action, { expected, maxAgeMs = 30_000 } = {}) {
-    if (!action || typeof action !== 'object') throw new Error('An action object is required.');
-    if (performance.now() - this.readyAt > 30_000) await this.assertReady();
-    if (action.type === 'open-app') {
-      if (!this.installedApps.some((app) => app.packageName === action.packageName))
-        throw new Error('The app was not observed in the installed-app list.');
-      if (expected && expected.deviceId !== this.deviceId)
-        throw new Error('Observation belongs to a different device.');
-      await this.api(this.path(`/apps/${encodeURIComponent(action.packageName)}`), 'PUT', {});
-      return;
-    }
-    const current = await this.observe();
-    if (expected) assertFresh(current, expected, action, maxAgeMs);
-    const point = (x, y) => {
-      integer(x, 'x');
-      integer(y, 'y');
-      if (x >= current.screen.width || y >= current.screen.height)
-        throw new Error('Coordinates are outside the screen.');
-    };
-    let suffix,
-      method = 'POST',
-      body,
-      inputVerification;
-    switch (action.type) {
-      case 'tap':
-        point(action.x, action.y);
-        suffix = '/tap';
-        body = { x: action.x, y: action.y };
-        break;
-      case 'tap-element': {
-        if (!expected) throw new Error('Element taps require their original observation.');
-        const node = current.elements.find((entry) => entry.id === action.elementId);
-        if (!node?.enabled || !(node.clickable || node.editable))
-          throw new Error('Element is not actionable.');
-        const { left, top, right, bottom } = node.bounds;
-        suffix = '/tap';
-        body = { x: Math.floor((left + right) / 2), y: Math.floor((top + bottom) / 2) };
-        break;
-      }
-      case 'swipe':
-        point(action.startX, action.startY);
-        point(action.endX, action.endY);
-        integer(action.duration ?? 300, 'duration', 10);
-        suffix = '/swipe';
-        body = {
-          startX: action.startX,
-          startY: action.startY,
-          endX: action.endX,
-          endY: action.endY,
-          duration: action.duration ?? 300,
-        };
-        if (action.regionId && expected) {
-          const before = expected.elements.find((e) => e.id === action.regionId).bounds;
-          const after = current.elements.find((e) => e.id === action.regionId).bounds;
-          // Resolve the same relative gesture in current geometry (e.g. a collapsing toolbar).
-          const project = (value, oldStart, oldEnd, newStart, newEnd) => {
-            const fraction = (value - oldStart) / (oldEnd - oldStart);
-            if (!Number.isFinite(fraction) || fraction < 0 || fraction >= 1)
-              throw new Error('Swipe leaves its observed region.');
-            return Math.floor(newStart + fraction * (newEnd - newStart));
-          };
-          body.startX = project(action.startX, before.left, before.right, after.left, after.right);
-          body.endX = project(action.endX, before.left, before.right, after.left, after.right);
-          body.startY = project(action.startY, before.top, before.bottom, after.top, after.bottom);
-          body.endY = project(action.endY, before.top, before.bottom, after.top, after.bottom);
-          point(body.startX, body.startY);
-          point(body.endX, body.endY);
+    return resolveAction(
+      this,
+      action,
+      { expected, maxAgeMs },
+      async (resolved) => {
+        switch (resolved.type) {
+          case 'open-app':
+            await this.api(
+              this.path(`/apps/${encodeURIComponent(resolved.packageName)}`),
+              'PUT',
+              {},
+            );
+            return;
+          case 'tap':
+            await this.api(this.path('/tap'), 'POST', { x: resolved.x, y: resolved.y });
+            return;
+          case 'swipe': {
+            const body = {
+              startX: resolved.startX,
+              startY: resolved.startY,
+              endX: resolved.endX,
+              endY: resolved.endY,
+              duration: resolved.duration,
+            };
+            await this.api(this.path('/swipe'), 'POST', body);
+            return;
+          }
+          case 'type': {
+            const accepted =
+              this.textCompletionMode === 'accepted' && Boolean(resolved.inputVerification);
+            await this.api(this.path('/keyboard'), 'POST', {
+              text: resolved.text,
+              clear: resolved.clear,
+              completionMode: accepted ? 'accepted' : 'committed',
+            });
+            return;
+          }
+          case 'clear':
+            await this.api(this.path('/keyboard'), 'DELETE');
+            return;
+          case 'key':
+            await this.api(this.path('/keyboard'), 'PUT', { key: KEYS[resolved.key] });
+            return;
+          case 'global':
+            await this.api(this.path('/global'), 'POST', { action: GLOBAL_ACTIONS[resolved.name] });
+            return;
+          default:
+            throw new Error('Unsupported action type.');
         }
-        break;
-      case 'type':
-        if (!current.phone.isEditable) throw new Error('Focus an editable field before typing.');
-        if (
-          typeof action.text !== 'string' ||
-          (action.clear !== undefined && typeof action.clear !== 'boolean')
-        )
-          throw new Error('Text must be a string and clear must be boolean.');
-        suffix = '/keyboard';
-        inputVerification =
-          this.textCompletionMode === 'accepted' ? prepareInputVerification(current, action) : null;
-        body = {
-          text: action.text,
-          clear: action.clear ?? false,
-          completionMode: inputVerification ? 'accepted' : 'committed',
-        };
-        break;
-      case 'clear':
-        if (!current.phone.isEditable) throw new Error('Focus an editable field before clearing.');
-        suffix = '/keyboard';
-        method = 'DELETE';
-        break;
-      case 'key':
-        if (!Object.hasOwn(KEYS, action.key)) throw new Error('Unsupported keyboard key.');
-        suffix = '/keyboard';
-        method = 'PUT';
-        body = { key: KEYS[action.key] };
-        break;
-      case 'global':
-        if (!Object.hasOwn(GLOBAL_ACTIONS, action.name))
-          throw new Error('Unsupported global action.');
-        suffix = '/global';
-        body = { action: GLOBAL_ACTIONS[action.name] };
-        break;
-      default:
-        throw new Error('Unsupported action type.');
+      },
+      (current, action) =>
+        this.textCompletionMode === 'accepted' ? prepareInputVerification(current, action) : null,
+    );
+  }
+}
+
+const execFilePromise = promisify(execFile);
+const execFileAsync = async (...args) => {
+  const { stdout, stderr } = await execFilePromise(...args);
+  return [stdout, stderr];
+};
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+function parseBounds(value) {
+  const match = /^\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]$/.exec(value || '');
+  if (!match) throw new Error('UIAutomator XML contains invalid bounds.');
+  return {
+    left: Number(match[1]),
+    top: Number(match[2]),
+    right: Number(match[3]),
+    bottom: Number(match[4]),
+  };
+}
+
+function parseTree(value) {
+  if (!value || typeof value !== 'object')
+    throw new Error('UIAutomator XML is missing its hierarchy.');
+  let focusedInput = false;
+  const visit = (node) => {
+    if (Array.isArray(node)) return node.map(visit);
+    if (!node || typeof node !== 'object')
+      throw new Error('UIAutomator XML contains an invalid node.');
+    const children = node.node == null ? [] : [visit(node.node)].flat();
+    if (typeof node.bounds !== 'string') return { children };
+    const className = node.class || '';
+    focusedInput ||= node.focused === 'true' && className.includes('EditText');
+    return {
+      className,
+      text: node.text || '',
+      contentDescription: node['content-desc'] || '',
+      resourceId: node['resource-id'] || '',
+      boundsInScreen: parseBounds(node.bounds),
+      isVisibleToUser: node.displayed !== 'false',
+      isEnabled: node.enabled !== 'false',
+      isClickable: node.clickable === 'true',
+      isEditable: node.editable === 'true' || className.includes('EditText'),
+      isScrollable: node.scrollable === 'true',
+      isCheckable: node.checkable === 'true',
+      isChecked: node.checked === 'true',
+      isSelected: node.selected === 'true',
+      isFocused: node.focused === 'true',
+      isPassword: node.password === 'true',
+      children,
+    };
+  };
+  return { tree: visit(value), focusedInput };
+}
+
+function parseUiAutomatorXml(output) {
+  const text = output.toString('utf8');
+  const start = text.indexOf('<?xml');
+  const end = text.lastIndexOf('</hierarchy>');
+  if (start < 0 || end < start) throw new Error('UIAutomator returned malformed XML.');
+  const xml = text.slice(start, end + '</hierarchy>'.length);
+  if (XMLValidator.validate(xml) !== true) throw new Error('UIAutomator returned malformed XML.');
+  let parsed;
+  try {
+    parsed = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '' }).parse(xml);
+  } catch {
+    throw new Error('UIAutomator returned malformed XML.');
+  }
+  return parseTree(parsed?.hierarchy);
+}
+
+export class AdbDevice {
+  constructor({ serial, adbPath = 'adb', execFile: runner = execFileAsync } = {}) {
+    if (typeof serial !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(serial.trim()))
+      throw new Error('ADB mode requires one explicit serial using letters, numbers, . _ : or -.');
+    this.serial = serial.trim();
+    this.deviceId = this.serial;
+    this.adbPath = adbPath;
+    this.execFile = runner;
+    this.readyAt = -Infinity;
+    this.installedApps = [];
+  }
+
+  async run(args, mutation = false) {
+    try {
+      const [stdout] = await this.execFile(this.adbPath, ['-s', this.serial, ...args], {
+        encoding: 'buffer',
+        maxBuffer: 20 * 1024 * 1024,
+        shell: false,
+      });
+      const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+      if (mutation && /\b(error|exception|unknown command)\b/i.test(bytes.toString('utf8')))
+        throw new Error('uncertain');
+      return bytes;
+    } catch (error) {
+      if (mutation)
+        throw new Error('ADB mutation outcome is uncertain; the action was not retried.');
+      throw new Error(
+        error?.code === 'ENOENT'
+          ? 'Could not run adb. Install Android platform-tools and retry.'
+          : 'ADB read failed. Check the explicit serial and device connection.',
+      );
     }
-    await this.api(this.path(suffix), method, body);
-    return inputVerification ? { inputVerification } : undefined;
+  }
+
+  async assertReady() {
+    const state = (await this.run(['get-state'])).toString('utf8').trim();
+    if (state !== 'device') throw new Error(`ADB device is ${state || 'unavailable'}.`);
+    this.readyAt = performance.now();
+    return { id: this.serial, name: this.serial, state: 'ready' };
+  }
+
+  async observe() {
+    const [sizeOutput, windowOutput, xmlOutput] = await Promise.all([
+      this.run(['shell', 'wm', 'size']),
+      this.run(['shell', 'dumpsys', 'window']),
+      this.run(['exec-out', 'uiautomator', 'dump', '/dev/tty']),
+    ]);
+    const sizeText = sizeOutput.toString('utf8');
+    const size =
+      sizeText.match(/Override size:\s*(\d+)x(\d+)/) ||
+      sizeText.match(/Physical size:\s*(\d+)x(\d+)/);
+    if (!size) throw new Error('ADB returned invalid screen bounds.');
+    const windowText = windowOutput.toString('utf8');
+    const foreground = windowText.match(
+      /m(?:CurrentFocus|FocusedApp)[^\n]*?\s([A-Za-z0-9._]+)\/([^\s}]+)/,
+    );
+    const { tree, focusedInput } = parseUiAutomatorXml(xmlOutput);
+    return summarizeState(
+      {
+        device_context: { screen_bounds: { width: Number(size[1]), height: Number(size[2]) } },
+        phone_state: {
+          packageName: foreground?.[1] || '',
+          currentApp: foreground ? `${foreground[1]}/${foreground[2]}` : '',
+          keyboardVisible: focusedInput,
+          isEditable: focusedInput,
+        },
+        a11y_tree: tree,
+      },
+      this.serial,
+    );
+  }
+
+  async listApps() {
+    const output = (await this.run(['shell', 'pm', 'list', 'packages'])).toString('utf8');
+    const packageNames = output
+      .split(/\r?\n/)
+      .map((line) => line.match(/^package:(.+)$/)?.[1])
+      .filter(Boolean);
+    if (!packageNames.length) throw new Error('ADB returned an empty app inventory.');
+    this.installedApps = packageNames.map((packageName) => ({
+      packageName,
+      label: packageName
+        .split('.')
+        .at(-1)
+        .replaceAll(/[_-]/g, ' ')
+        .replaceAll(/\b\w/g, (character) => character.toUpperCase()),
+    }));
+    return this.installedApps;
+  }
+
+  async screenshot() {
+    const bytes = await this.run(['exec-out', 'screencap', '-p']);
+    if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE))
+      throw new Error('ADB screenshot is not a PNG.');
+    return bytes;
+  }
+
+  async act(action, context = {}) {
+    return resolveAction(
+      this,
+      action,
+      context,
+      async (resolved) => {
+        if (resolved.type === 'open-app') {
+          const output = (
+            await this.run([
+              'shell',
+              'cmd',
+              'package',
+              'resolve-activity',
+              '--brief',
+              '-a',
+              'android.intent.action.MAIN',
+              '-c',
+              'android.intent.category.LAUNCHER',
+              resolved.packageName,
+            ])
+          )
+            .toString('utf8')
+            .trim()
+            .split(/\r?\n/)
+            .at(-1);
+          if (!/^[A-Za-z0-9._]+\/[A-Za-z0-9._$]+$/.test(output || ''))
+            throw new Error('ADB could not resolve the app launch activity.');
+          await this.run(['shell', 'am', 'start', '-n', output], true);
+          return;
+        }
+        if (resolved.type === 'tap')
+          return this.run(['shell', 'input', 'tap', String(resolved.x), String(resolved.y)], true);
+        if (resolved.type === 'swipe')
+          return this.run(
+            [
+              'shell',
+              'input',
+              'swipe',
+              String(resolved.startX),
+              String(resolved.startY),
+              String(resolved.endX),
+              String(resolved.endY),
+              String(resolved.duration),
+            ],
+            true,
+          );
+        if (resolved.type === 'clear')
+          return this.run(['shell', 'input', 'keyevent', '--longpress', '67'], true);
+        if (resolved.type === 'key')
+          return this.run(['shell', 'input', 'keyevent', String(KEYS[resolved.key])], true);
+        if (resolved.type === 'global') {
+          const keycode = { back: 4, home: 3, recent: 187 }[resolved.name];
+          return this.run(['shell', 'input', 'keyevent', String(keycode)], true);
+        }
+        if (resolved.type === 'type') {
+          if (!/^[A-Za-z0-9 ._@+:-]+$/.test(resolved.text))
+            throw new Error(
+              'ADB text supports only letters, numbers, spaces, and ._@+:- characters.',
+            );
+          if (resolved.clear)
+            await this.run(['shell', 'input', 'keyevent', '--longpress', '67'], true);
+          return this.run(['shell', 'input', 'text', resolved.text.replaceAll(' ', '%s')], true);
+        }
+        throw new Error('Unsupported action type.');
+      },
+      (current, action) => prepareInputVerification(current, action),
+    );
   }
 }

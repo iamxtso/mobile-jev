@@ -1,11 +1,37 @@
 'use client';
 import dynamic from 'next/dynamic';
+import { useEffect, useState } from 'react';
 import { ArrowLeft, Circle, Expand, Radio, RefreshCw, Smartphone, Square } from 'lucide-react';
 import type { StudioState } from './use-studio';
 const DeviceStream = dynamic(
   () => import('@mobilerun/react').then((module) => module.DeviceStream),
   { ssr: false },
 );
+function AdbSnapshot({
+  url,
+  onConnection,
+}: {
+  url: string;
+  onConnection: (value: boolean) => void;
+}) {
+  const [source, setSource] = useState(url);
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden) setSource(`${url}?t=${Date.now()}`);
+    };
+    const timer = setInterval(refresh, 500);
+    return () => clearInterval(timer);
+  }, [url]);
+  return (
+    <img
+      className="adb-snapshot"
+      src={source}
+      alt="Current ADB device screen"
+      onLoad={() => onConnection(true)}
+      onError={() => onConnection(false)}
+    />
+  );
+}
 export function DevicePanel({ state }: { state: StudioState }) {
   const { connected, device, phoneStage, deviceError, controls, busy, loadDevice, setConnected } =
     state;
@@ -50,12 +76,16 @@ export function DevicePanel({ state }: { state: StudioState }) {
                   Reconnect
                 </button>
               </div>
+            ) : device?.kind === 'adb' ? (
+              <AdbSnapshot url={device.snapshotUrl || ''} onConnection={setConnected} />
             ) : (
               <DeviceStream
                 ref={controls}
-                streamUrl={device?.streamUrl || undefined}
-                streamToken={device?.streamToken || undefined}
-                hasControl={!busy}
+                streamUrl={device?.kind === 'mobilerun' ? device.streamUrl || undefined : undefined}
+                streamToken={
+                  device?.kind === 'mobilerun' ? device.streamToken || undefined : undefined
+                }
+                hasControl={!busy && device?.kind === 'mobilerun'}
                 muted
                 placeholderLabel={device?.state || 'Connecting to your phone'}
                 onStreamHealed={loadDevice}
@@ -68,24 +98,26 @@ export function DevicePanel({ state }: { state: StudioState }) {
           <button
             aria-label="Android back"
             title="Back"
-            disabled={!connected || busy}
-            onClick={() => controls.current?.sendSystemKey('BACK')}
+            disabled={!connected || busy || device?.control === 'disabled'}
+            onClick={() => device?.kind === 'mobilerun' && controls.current?.sendSystemKey('BACK')}
           >
             <ArrowLeft size={17} />
           </button>
           <button
             aria-label="Android home"
             title="Home"
-            disabled={!connected || busy}
-            onClick={() => controls.current?.sendSystemKey('HOME')}
+            disabled={!connected || busy || device?.control === 'disabled'}
+            onClick={() => device?.kind === 'mobilerun' && controls.current?.sendSystemKey('HOME')}
           >
             <Circle size={15} />
           </button>
           <button
             aria-label="Android recent apps"
             title="Recent apps"
-            disabled={!connected || busy}
-            onClick={() => controls.current?.sendSystemKey('RECENT')}
+            disabled={!connected || busy || device?.control === 'disabled'}
+            onClick={() =>
+              device?.kind === 'mobilerun' && controls.current?.sendSystemKey('RECENT')
+            }
           >
             <Square size={13} />
           </button>
@@ -96,8 +128,12 @@ export function DevicePanel({ state }: { state: StudioState }) {
         </div>
         <div className="stage-caption">
           <i />
-          {busy ? 'Agent in control' : 'Touch & keyboard enabled'}
-          <span>ANDROID · MOBILERUN</span>
+          {busy
+            ? 'Agent in control'
+            : device?.control === 'disabled'
+              ? 'Snapshot only · controls disabled'
+              : 'Touch & keyboard enabled'}
+          <span>ANDROID · {device?.kind === 'adb' ? 'ADB' : 'MOBILERUN'}</span>
         </div>
       </div>
     </section>

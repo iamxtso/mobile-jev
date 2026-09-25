@@ -13,6 +13,8 @@ test('CLI help works from outside the repository without credentials', () => {
   });
   assert.match(help, /pnpm agent COMMAND/);
   assert.match(help, /--execute/);
+  assert.match(help, /--backend mobilerun\|adb/);
+  assert.match(help, /--adb-serial SERIAL/);
 });
 
 test('configuration template has no embedded account keys or device ID', () => {
@@ -20,4 +22,6 @@ test('configuration template has no embedded account keys or device ID', () => {
   for (const key of ['MOBILERUN_API_KEY', 'MOBILERUN_DEVICE_ID', 'TYPESAFE_API_KEY'])
     assert.match(template, new RegExp(`^${key}=$`, 'm'));
   assert.match(template, /^MOBILERUN_BASE_URL=https:\/\/api.mobilerun.ai\/v1$/m);
+  assert.match(template, /^# JEV_DEVICE_BACKEND=adb$/m);
+  assert.match(template, /^# ADB_SERIAL=emulator-5554$/m);
 });

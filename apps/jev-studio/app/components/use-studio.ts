@@ -62,7 +62,13 @@ export function useStudio() {
   }, [loadDevice]);
 
   useEffect(() => {
-    if (!device || device.streamUrl || deviceError) return;
+    if (
+      !device ||
+      (device.kind === 'mobilerun' && device.streamUrl) ||
+      (device.kind === 'adb' && device.snapshotUrl) ||
+      deviceError
+    )
+      return;
     const timer = setTimeout(() => void loadDevice(), 3000);
     return () => clearTimeout(timer);
   }, [device, deviceError, loadDevice]);

@@ -47,5 +47,8 @@
   "homepage": "https://github.com/droidrun/mobile-jev#readme",
   "bugs": {
     "url": "https://github.com/droidrun/mobile-jev/issues"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.11.1"
   }
 }

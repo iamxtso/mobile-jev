@@ -1,13 +1,13 @@
 import { parseArgs } from 'node:util';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { MobilerunDevice } from './device.mjs';
+import { createAgentDevice, deviceConfig } from './device-factory.mjs';
 import { TypeSafePolicy, runAgent } from './agent.mjs';
 import { pooledRequest, decodeJson } from './http.mjs';
 import { measuredRequest, summarizeMetrics } from './metrics.mjs';
 import { confirmInput } from './input-verification.mjs';
 
-const help = `Mobilerun device harness (Node 22+ and curl)
+const help = `Mobile Jev device harness (Node 22+, curl for Mobilerun, and ADB for local mode)
 
 pnpm agent COMMAND [ARGS] [OPTIONS]
 
@@ -26,7 +26,9 @@ Commands:
   run GOAL                       Preview a TypeSafe decision; --execute runs the loop
 
 Options:
-  --device ID                    Or MOBILERUN_DEVICE_ID
+  --backend mobilerun|adb        Override JEV_DEVICE_BACKEND
+  --adb-serial SERIAL            Required with --backend adb
+  --device ID                    Mobilerun device override; or MOBILERUN_DEVICE_ID
   --out PATH                     Save observe JSON or screenshot PNG
   --snapshot PATH                Original observe JSON for tap-element
   --text VALUE                   Repeatable exact text candidates for TypeSafe
@@ -38,7 +40,7 @@ Options:
   --execute                      Execute TypeSafe-selected actions
   --trace PATH                   Save model requests, responses, actions, and final state (JSONL)
 
-Keys: MOBILERUN_API_KEY (or MOBILERUN_CLOUD_API_KEY); TYPESAFE_API_KEY for run.
+Keys: JEV_DEVICE_BACKEND, ADB_SERIAL; Mobilerun API key and device ID; TYPESAFE_API_KEY for run.
 Direct commands execute immediately. Run sends goal and UI text to TypeSafe.
 `;
 
@@ -53,6 +55,8 @@ async function main() {
     options: {
       help: { type: 'boolean', short: 'h' },
       device: { type: 'string' },
+      backend: { type: 'string' },
+      'adb-serial': { type: 'string' },
       out: { type: 'string' },
       snapshot: { type: 'string' },
       clear: { type: 'boolean' },
@@ -76,26 +80,46 @@ async function main() {
     if (args.length < min || args.length > max)
       throw new Error(`Invalid arguments for ${command}. Use --help.`);
   };
-  const device = new MobilerunDevice({
+  const config = deviceConfig(process.env, {
+    backend: values.backend,
+    adbSerial: values['adb-serial'],
+  });
+  if (config.backend === 'adb' && values.device)
+    throw new Error('--device is a Mobilerun option; use --adb-serial with ADB.');
+  const device = createAgentDevice(config, {
     deviceId: values.device || process.env.MOBILERUN_DEVICE_ID,
     textCompletionMode: values['text-completion'],
   });
   if (command === 'devices') {
-    arity(0);
+    if (config.backend !== 'mobilerun')
+      throw new Error('The devices command is available only with the Mobilerun backend.');
     print(await device.listDevices());
     return;
   }
   if (command === 'profile') {
     arity(0);
-    const metrics = [];
-    device.request = measuredRequest({ service: 'mobilerun', metrics });
-    await device.assertReady();
-    for (let i = 0; i < 5; i++) await device.observe();
-    const report = {
-      baseUrl: device.baseUrl,
-      deviceId: device.deviceId,
-      requests: summarizeMetrics(metrics),
-    };
+    let report;
+    if (config.backend === 'mobilerun') {
+      const metrics = [];
+      device.request = measuredRequest({ service: 'mobilerun', metrics });
+      await device.assertReady();
+      for (let i = 0; i < 5; i++) await device.observe();
+      report = {
+        backend: config.backend,
+        baseUrl: device.baseUrl,
+        deviceId: device.deviceId,
+        requests: summarizeMetrics(metrics),
+      };
+    } else {
+      const started = performance.now();
+      await device.assertReady();
+      for (let i = 0; i < 5; i++) await device.observe();
+      report = {
+        backend: config.backend,
+        adbSerial: config.adbSerial,
+        totalMs: performance.now() - started,
+      };
+    }
     if (values.out) await save(values.out, JSON.stringify(report, null, 2) + '\n');
     print(report);
     return;
