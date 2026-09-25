@@ -84,7 +84,7 @@ export function buildQuestions(observation, texts = [], apps = []) {
   const operations = {};
   if (Object.keys(app).length)
     operations.OPEN_APP =
-      'Open an installed app needed for the goal. Use this to switch apps directly instead of navigating through the launcher. Only apps other than the current foreground app are offered.';
+      'Open an available app needed for the goal. Use this to switch apps directly instead of navigating through the launcher. Only apps other than the current foreground app are offered.';
   if (Object.keys(tap).length)
     operations.TAP =
       'Tap an observed control to navigate toward the goal, open search, open a date picker, choose an option, or focus an input. Text entry becomes available after a field is focused.';

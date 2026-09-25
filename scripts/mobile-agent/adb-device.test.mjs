@@ -64,9 +64,21 @@ function fakeAdb({
     if (command === 'shell dumpsys window') return [Buffer.from(windowText), Buffer.alloc(0)];
     if (command === 'exec-out uiautomator dump /dev/tty')
       return [Buffer.from(xmlText), Buffer.alloc(0)];
-    if (command === 'shell pm list packages')
+    if (
+      command ===
+      'shell cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER'
+    )
       return [
-        Buffer.from('package:com.android.settings\npackage:com.example.app\n'),
+        Buffer.from(
+          [
+            '2 activities found:',
+            '  Activity #0:',
+            '    com.android.settings/.Settings',
+            '  Activity #1:',
+            '    com.android.settings/.Settings',
+            '    com.example.app/.MainActivity',
+          ].join('\n'),
+        ),
         Buffer.alloc(0),
       ];
     if (command.includes('resolve-activity'))

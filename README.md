@@ -50,7 +50,7 @@ ADB_SERIAL=emulator-5554
 
 ## Included demo: enable dark theme
 
-Ask **“Turn on dark theme in Android Settings.”** Jev discovers Settings from the device's installed apps, opens it through the Mobilerun API, selects the relevant controls, and changes the setting. The demo runner reads the screen again and verifies the actual Dark theme switch is on; it does not accept a model DONE response as proof.
+Ask **“Turn on dark theme in Android Settings.”** Jev discovers Settings from the device's available apps, opens it through the Mobilerun API, selects the relevant controls, and changes the setting. The demo runner reads the screen again and verifies the actual Dark theme switch is on; it does not accept a model DONE response as proof.
 
 ```sh
 pnpm demo dark-theme --reset
@@ -101,7 +101,7 @@ flowchart LR
   E --> A
 ```
 
-Jev chooses `OPEN_APP`, `TAP`, `TYPE_TEXT`, scrolling, navigation, `WAIT`, `DONE`, or `BLOCKED`. Operation and compatible-target questions share one request; unused target answers cannot execute. App launch targets come from the configured device inventory. When a goal names installed apps explicitly, exact name matching narrows that inventory; otherwise up to 200 apps are offered and the launcher remains available.
+Jev chooses `OPEN_APP`, `TAP`, `TYPE_TEXT`, scrolling, navigation, `WAIT`, `DONE`, or `BLOCKED`. Operation and compatible-target questions share one request; unused target answers cannot execute. App launch targets come from the configured device inventory. When a goal names available apps explicitly, exact name matching narrows that inventory; otherwise up to 200 apps are offered and the launcher remains available.
 
 The executor resolves coordinates from observed bounds. It validates probability distributions, rejects stale targets, and never retries a device mutation after an uncertain transport failure. It records actions before the next observation, so a failed read cannot erase an executed action.
 

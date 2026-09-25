@@ -658,12 +658,28 @@ export class AdbDevice {
   }
 
   async listApps() {
-    const output = (await this.run(['shell', 'pm', 'list', 'packages'])).toString('utf8');
-    const packageNames = output
-      .split(/\r?\n/)
-      .map((line) => line.match(/^package:(.+)$/)?.[1])
-      .filter(Boolean);
-    if (!packageNames.length) throw new Error('ADB returned an empty app inventory.');
+    const output = (
+      await this.run([
+        'shell',
+        'cmd',
+        'package',
+        'query-activities',
+        '--brief',
+        '-a',
+        'android.intent.action.MAIN',
+        '-c',
+        'android.intent.category.LAUNCHER',
+      ])
+    ).toString('utf8');
+    const packageNames = [
+      ...new Set(
+        output
+          .split(/\r?\n/)
+          .map((line) => line.trim().match(/^([A-Za-z0-9._]+)\/[^\s]+$/)?.[1])
+          .filter(Boolean),
+      ),
+    ];
+    if (!packageNames.length) throw new Error('ADB returned no launchable apps.');
     this.installedApps = packageNames.map((packageName) => ({
       packageName,
       label: packageName

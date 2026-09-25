@@ -123,7 +123,7 @@ adb -s SERIAL get-state
 adb -s SERIAL shell wm size
 adb -s SERIAL shell dumpsys window
 adb -s SERIAL exec-out uiautomator dump /dev/tty
-adb -s SERIAL shell pm list packages
+adb -s SERIAL shell cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER
 adb -s SERIAL shell am start -n PACKAGE/ACTIVITY
 adb -s SERIAL shell input tap X Y
 adb -s SERIAL shell input swipe X1 Y1 X2 Y2 DURATION
@@ -201,6 +201,15 @@ hiding new behavior.
 A fixed list of prepared tap scripts was rejected. It would not generalize
 beyond the demo and would violate the Agent's policy boundary.
 
+## Element identity
+
+ADB element IDs such as `ui.0.0.0.0` are snapshot-local paths through the
+UIAutomator tree. They identify a node only within one observation and must not
+be persisted across observations or screens. Cross-screen identity should use
+`resourceId` when available, plus text, label, and bounds. The Agent uses the
+snapshot-local ID to resolve an action target, then rechecks the observation
+before dispatch.
+
 ## Open questions and risks
 
 - Which non-ASCII characters can a target Android version accept through
@@ -212,7 +221,9 @@ beyond the demo and would violate the Agent's policy boundary.
 - How should screenshot cadence adapt under load? Begin at one snapshot every
   500 ms while the Studio tab is visible and make no liveness guarantee.
 
-## Next implementation step
+## Verification status
 
-Build and test the pure ADB state parser against an offline UIAutomator fixture
-before adding subprocess-backed device actions.
+The offline parser, fixed-argv ADB actions, orientation handling, screenshot
+polling, and input verification tests are implemented on this branch. The
+remaining verification gap is live-device mutation testing; the current device
+checks are read-only.
