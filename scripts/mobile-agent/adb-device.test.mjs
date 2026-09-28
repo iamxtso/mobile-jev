@@ -53,6 +53,7 @@ function fakeAdb({
   sizeText = 'Physical size: 400x800\n',
   windowText = 'mCurrentFocus=Window{123 u0 com.example.app/.MainActivity}\n',
   xmlText = xml,
+  screencapBytes,
 } = {}) {
   const calls = [];
   const runner = async (file, args, options) => {
@@ -84,7 +85,7 @@ function fakeAdb({
     if (command.includes('resolve-activity'))
       return [Buffer.from('com.example.app/.MainActivity\n'), Buffer.alloc(0)];
     if (command === 'exec-out screencap -p')
-      return [Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]), Buffer.alloc(0)];
+      return [screencapBytes ?? Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]), Buffer.alloc(0)];
     return [Buffer.alloc(0), Buffer.alloc(0)];
   };
   return { calls, device: new AdbDevice({ serial: 'emulator-5554', execFile: runner }) };
@@ -130,6 +131,24 @@ test('ADB uses current landscape display bounds for coordinates and input', asyn
   assert.deepEqual(calls.at(-1).args.slice(2), ['shell', 'input', 'tap', '1900', '1000']);
 });
 
+test('ADB prefers cur over the smaller app viewport across several displays', async () => {
+  const { device } = fakeAdb({
+    sizeText: 'Physical size: 2560x1440\n',
+    windowText: [
+      '  Display: mDisplayId=4',
+      '    init=2560x1440 cur=2560x1440 app=2560x1440',
+      '  Display: mDisplayId=2',
+      '    init=1920x720 cur=1920x720 app=1920x720',
+      '  Display: mDisplayId=0',
+      '    init=2560x1440 cur=2560x1440 app=2560x1312',
+      'mCurrentFocus=Window{123 u0 com.example.app/.MainActivity}',
+      '',
+    ].join('\n'),
+    xmlText: xml.replace('[0,0][400,800]', '[0,0][2560,1440]'),
+  });
+  assert.deepEqual((await device.observe()).screen, { width: 2560, height: 1440 });
+});
+
 test('ADB uses wm size only when it matches UIAutomator bounds', async () => {
   const { device } = fakeAdb();
   assert.deepEqual((await device.observe()).screen, { width: 400, height: 800 });
@@ -145,6 +164,14 @@ test('ADB screenshot subprocess has a finite timeout', async () => {
   const { device, calls } = fakeAdb();
   await device.screenshot();
   assert.equal(calls.at(-1).options.timeout, 5_000);
+});
+
+test('ADB screenshot drops adb warnings printed before the PNG', async () => {
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2]);
+  const { device } = fakeAdb({
+    screencapBytes: Buffer.concat([Buffer.from('[Warning] Multiple displays were found.\n'), png]),
+  });
+  assert.deepEqual(await device.screenshot(), png);
 });
 
 test('malformed UIAutomator XML fails as an ordinary read error', async () => {

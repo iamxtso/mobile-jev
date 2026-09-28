@@ -536,23 +536,30 @@ function currentDisplaySize(windowText) {
   if (!selected && displaySections.length > 1)
     throw new Error('ADB dumpsys window returned ambiguous current display bounds.');
 
-  const section = selected || displaySections[0];
-  const values = [
-    ...(section || '').matchAll(/\b(?:current|cur|app)\s*(?:=|:)\s*(\d+)\s*[xX]\s*(\d+)/gi),
-  ].map((match) => ({ width: Number(match[1]), height: Number(match[2]) }));
-  const unique = new Map(values.map((value) => [`${value.width}x${value.height}`, value]));
-  if (unique.size > 1)
+  const section = selected || displaySections[0] || '';
+  const sizes = (names) => [
+    ...new Set(
+      [...section.matchAll(new RegExp(`\\b(?:${names})\\s*(?:=|:)\\s*(\\d+)\\s*[xX]\\s*(\\d+)`, 'gi'))].map(
+        (match) => `${Number(match[1])}x${Number(match[2])}`,
+      ),
+    ),
+  ];
+  // cur= is the display size; app= is the app viewport and legitimately differs, so only
+  // fall back to it when the device omits cur.
+  const unique = sizes('current|cur');
+  const resolved = unique.length ? unique : sizes('app');
+  if (resolved.length > 1)
     throw new Error('ADB dumpsys window returned ambiguous current display bounds.');
-  if (unique.size === 0) return null;
-  const size = [...unique.values()][0];
+  if (resolved.length === 0) return null;
+  const [width, height] = resolved[0].split('x').map(Number);
   if (
-    !Number.isSafeInteger(size.width) ||
-    size.width < 1 ||
-    !Number.isSafeInteger(size.height) ||
-    size.height < 1
+    !Number.isSafeInteger(width) ||
+    width < 1 ||
+    !Number.isSafeInteger(height) ||
+    height < 1
   )
     throw new Error('ADB dumpsys window returned invalid current display bounds.');
-  return size;
+  return { width, height };
 }
 
 function wmDisplaySize(sizeText) {
@@ -692,10 +699,11 @@ export class AdbDevice {
   }
 
   async screenshot() {
-    const bytes = await this.run(['exec-out', 'screencap', '-p'], false, { timeout: 5_000 });
-    if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE))
-      throw new Error('ADB screenshot is not a PNG.');
-    return bytes;
+    const raw = await this.run(['exec-out', 'screencap', '-p'], false, { timeout: 5_000 });
+    // adb writes warnings to stdout ahead of the PNG (e.g. "Multiple displays were found").
+    const start = raw.indexOf(PNG_SIGNATURE);
+    if (start < 0) throw new Error('ADB screenshot is not a PNG.');
+    return raw.subarray(start);
   }
 
   async act(action, context = {}) {

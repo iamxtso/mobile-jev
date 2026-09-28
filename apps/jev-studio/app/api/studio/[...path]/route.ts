@@ -43,7 +43,18 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     if (request.method === 'GET' && path.join('/') === 'device/snapshot') {
       const config = deviceConfig();
       if (config.backend !== 'adb') throw new StudioError('Not found.', 404);
-      const bytes = await createAgentDevice(config).screenshot();
+      const client = createAgentDevice(config);
+      let bytes: Awaited<ReturnType<typeof client.screenshot>>;
+      try {
+        await client.assertReady();
+        bytes = await client.screenshot();
+      } catch (error) {
+        // Surface the adb failure (offline, wrong serial, missing binary) instead of a bare 502.
+        throw new StudioError(
+          error instanceof Error ? error.message : 'The device is unavailable.',
+          503,
+        );
+      }
       return new Response(bytes, {
         headers: { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' },
       });
