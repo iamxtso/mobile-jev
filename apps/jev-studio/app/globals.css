@@ -836,6 +836,27 @@ textarea:focus {
     0 5px 10px #2f333a26;
   z-index: 1;
   margin-top: 8px;
+  /* Overridden per snapshot so a landscape infotainment screen is not letterboxed. */
+  --frame-aspect: 224 / 496;
+}
+/* A landscape screen is not a phone: drop the tall radius and the side-button stubs. */
+.phone-frame.landscape {
+  border-radius: 12px;
+  /* The bezel is drawn as a shadow so it costs no layout: padding here would make the
+     screen box a fraction wider than the snapshot and force a crop. */
+  padding: 0;
+  box-shadow:
+    0 0 0 4px #1f2125,
+    0 0 0 5px #616976,
+    0 20px 40px -10px #4d545f45,
+    0 5px 10px #2f333a26;
+}
+.phone-frame.landscape:before,
+.phone-frame.landscape:after {
+  display: none;
+}
+.phone-frame.landscape .phone-screen {
+  border-radius: 9px;
 }
 .phone-frame:before {
   content: '';
@@ -940,8 +961,10 @@ textarea:focus {
 }
 .device-stage:fullscreen .phone-frame {
   height: calc(100vh - 160px);
+  max-height: 100%;
+  max-width: 100%;
   width: auto;
-  aspect-ratio: 1080/2400;
+  aspect-ratio: var(--frame-aspect, 1080 / 2400);
 }
 .stream-error {
   display: flex !important;
@@ -1335,16 +1358,21 @@ textarea:focus {
     padding: 12px 52px;
     container-type: size;
     display: grid;
-    grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  /* Without this the implicit auto column grows to the frame's max-content width, so
+     max-width: 100% on the frame resolves against the overflow instead of the stage. */
+  grid-template-columns: minmax(0, 1fr);
     justify-items: center;
     gap: 0;
   }
   .phone-frame {
-    height: min(100cqh, calc(100cqw * 496 / 224));
-    max-height: 100%;
-    width: auto;
+    /* Both axes constrain the frame: the narrower limit wins, so a wide screen fills the
+       stage and a tall phone still fits its height. */
+    width: min(100cqw, calc(100cqh * var(--frame-aspect, 224 / 496)));
+    height: auto;
     max-width: 100%;
-    aspect-ratio: 224 / 496;
+    max-height: 100%;
+    aspect-ratio: var(--frame-aspect, 224 / 496);
     min-height: 0;
     margin: 0;
     align-self: center;

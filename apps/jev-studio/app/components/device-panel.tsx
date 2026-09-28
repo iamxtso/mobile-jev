@@ -1,6 +1,6 @@
 'use client';
 import dynamic from 'next/dynamic';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { ArrowLeft, Circle, Expand, Radio, RefreshCw, Smartphone, Square } from 'lucide-react';
 import type { StudioState } from './use-studio';
 const DeviceStream = dynamic(
@@ -10,9 +10,11 @@ const DeviceStream = dynamic(
 function AdbSnapshot({
   url,
   onConnection,
+  onAspect,
 }: {
   url: string;
   onConnection: (value: boolean) => void;
+  onAspect: (value: string, wide: boolean) => void;
 }) {
   const [source, setSource] = useState('');
   useEffect(() => {
@@ -56,7 +58,13 @@ function AdbSnapshot({
       className="adb-snapshot"
       src={source || undefined}
       alt="Current ADB device screen"
-      onLoad={() => onConnection(true)}
+      onLoad={(event) => {
+        // The device may be a landscape infotainment screen; size the frame to it.
+        const { naturalWidth, naturalHeight } = event.currentTarget;
+        if (naturalWidth && naturalHeight)
+          onAspect(`${naturalWidth} / ${naturalHeight}`, naturalWidth > naturalHeight);
+        onConnection(true);
+      }}
       onError={() => onConnection(false)}
     />
   );
@@ -64,6 +72,8 @@ function AdbSnapshot({
 export function DevicePanel({ state }: { state: StudioState }) {
   const { connected, device, phoneStage, deviceError, controls, busy, loadDevice, setConnected } =
     state;
+  // The device may be a landscape infotainment screen; the frame follows its snapshot.
+  const [aspect, setAspect] = useState<{ value: string; wide: boolean } | null>(null);
   return (
     <section className="device-column">
       <div className="device-heading">
@@ -93,7 +103,10 @@ export function DevicePanel({ state }: { state: StudioState }) {
           <Expand size={15} />
         </button>
         <div className="stage-grid" />
-        <div className="phone-frame">
+        <div
+          className={`phone-frame${aspect?.wide ? ' landscape' : ''}`}
+          style={aspect ? ({ '--frame-aspect': aspect.value } as CSSProperties) : undefined}
+        >
           <div className="phone-screen">
             {deviceError ? (
               <div className="stream-error">
@@ -106,7 +119,11 @@ export function DevicePanel({ state }: { state: StudioState }) {
                 </button>
               </div>
             ) : device?.kind === 'adb' ? (
-              <AdbSnapshot url={device.snapshotUrl || ''} onConnection={setConnected} />
+              <AdbSnapshot
+                url={device.snapshotUrl || ''}
+                onConnection={setConnected}
+                onAspect={(value, wide) => setAspect({ value, wide })}
+              />
             ) : (
               <DeviceStream
                 ref={controls}
