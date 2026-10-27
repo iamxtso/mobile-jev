@@ -4,61 +4,48 @@
 
 Mobile Jev already has a backend-neutral Agent loop. `runAgent()` depends on
 four device operations, while policy, candidate discovery, stale checks, and
-input verification depend on one normalized observation shape. Local ADB must
-join that boundary without weakening mutation safety or changing the task SSE.
+input verification depend on one normalized observation shape. Local ADB is
+the only device backend. It must hold that boundary without weakening mutation
+safety or changing the task SSE.
 
-The first local ADB version binds one explicit serial. It does not select the
-first available device, expose a shell API, manage multiple devices, or emulate
-the Mobilerun WebRTC protocol.
+The ADB backend binds one explicit serial. It does not select the
+first available device, expose a shell API, or manage multiple devices.
 
 ## Usage
 
-The CLI and Studio select a backend through one discriminated configuration.
+The CLI and Studio configure the single ADB device through one configuration.
 
 ```js
-const device = createAgentDevice({ backend: 'adb', adbSerial: 'emulator-5554' });
+const device = createAgentDevice({ adbSerial: 'emulator-5554' });
 const result = await runAgent({ device, policy, goal, execute: true });
 ```
 
-`JEV_DEVICE_BACKEND=adb` and `ADB_SERIAL=emulator-5554` configure the same path
-without a CLI flag. Mobilerun remains the default.
+`ADB_SERIAL=emulator-5554` configures the same path
+without a CLI flag.
 
-Studio receives a discriminated device descriptor. It never receives an ADB
+Studio receives the ADB device descriptor. It never receives an ADB
 command or a general device-control endpoint.
 
 ```ts
-type StudioDevice =
-  | {
-      kind: 'mobilerun';
-      id: string;
-      name: string;
-      state: 'ready' | string;
-      streamUrl: string | null;
-      streamToken: string | null;
-      environment: 'Cloud' | 'Staging';
-      control: 'remote';
-    }
-  | {
-      kind: 'adb';
-      id: string;
-      name: string;
-      state: 'ready' | string;
-      snapshotUrl: string | null;
-      control: 'disabled';
-    };
+type StudioDevice = {
+  kind: 'adb';
+  id: string;
+  name: string;
+  state: 'ready' | string;
+  snapshotUrl: string | null;
+  control: 'disabled';
+};
 ```
 
-The browser polls the same-origin PNG snapshot for an ADB device. The existing
-`DeviceStream` remains the Mobilerun-only control path.
+The browser polls the same-origin PNG snapshot for the ADB device. Browser
+device controls stay disabled.
 
 ## Shape
 
 ### Domain data
 
 ```js
-/** @typedef {{ backend: 'mobilerun' }} MobilerunConfig */
-/** @typedef {{ backend: 'adb', adbSerial: string }} AdbConfig */
-/** @typedef {MobilerunConfig | AdbConfig} DeviceConfig */
+/** @typedef {{ adbSerial: string }} DeviceConfig */
 
 /**
  * @typedef {object} AgentDevice
@@ -69,10 +56,7 @@ The browser polls the same-origin PNG snapshot for an ADB device. The existing
  */
 ```
 
-The discriminated `DeviceConfig` prevents contradictory booleans such as
-`adb: true` and `mobilerun: true`. The factory is the only module that reads
-backend environment variables. CLI overrides pass a complete config into the
-same factory.
+The factory is the only module that reads device environment variables. CLI overrides pass a complete config into the same factory.
 
 ### Device boundary
 
@@ -81,8 +65,7 @@ normalized observation, `StaleObservationError`, `summarizeState()`, and
 `assertFresh()`. This avoids a behavior-preserving file migration in the same
 change that adds a backend.
 
-A private `resolveAction()` performs the checks shared by both concrete
-devices:
+A private `resolveAction()` performs the checks shared by every action dispatch:
 
 1. Validate the action shape and target device.
 2. Acquire a current observation.
@@ -138,7 +121,7 @@ character set for the first version. Input still returns
 existing read-only `confirmInput()` flow remains the success authority.
 
 The observation adapter reads screen size, foreground activity, and the
-UIAutomator hierarchy, then converts them to the raw Mobilerun-shaped state
+UIAutomator hierarchy, then converts them to the raw state
 accepted by `summarizeState()`. A real XML parser validates the document at
 this boundary. Tree-path element IDs and fingerprints remain derived by the
 existing functions.
@@ -151,15 +134,12 @@ multi-command atomicity protocol.
 
 The API creates the same configured device used by `web-runner.mjs`.
 
-- Mobilerun keeps the current device descriptor, credential check, remote
-  stream, and control.
 - ADB returns a descriptor with a same-origin snapshot URL.
 - ADB screenshot bytes never pass through JSON or the Agent observation path.
 - ADB browser touch, keyboard, clipboard, and system-key controls are disabled.
 - The serial may appear as the local device identifier, but no ADB server
   socket, executable path, environment variable, or command is returned.
-- ADB mode does not require Mobilerun credentials. It still requires the
-  TypeSafe credential used by the Agent policy.
+- ADB mode requires the TypeSafe credential used by the Agent policy.
 
 `server/store.mjs` and task SSE remain unchanged.
 
@@ -169,13 +149,13 @@ Candidate 2 is the base. It earned 27/30 in the cross-judge and defined the
 complete ADB Studio preview boundary.
 
 Two ideas from candidate 1 were grafted into it. First, `device.mjs` remains
-the shared observation and action-safety owner instead of splitting existing
-Mobilerun code into new files. Second, shared target resolution stays behind a
-private helper rather than duplicating validation in each adapter.
+the shared observation and action-safety owner instead of splitting device
+code into new files. Second, shared target resolution stays behind a
+private helper rather than duplicating validation at each call site.
 
 The status-only Studio proposal from candidate 1 was rejected. A read-only PNG
 snapshot gives the local path real screen-level verification. The larger
-`observation.mjs` and `mobilerun-device.mjs` migration from candidate 2 was
+`observation.mjs` migration from candidate 2 was
 rejected because it adds churn without changing the public contract.
 
 ## Tradeoffs accepted
@@ -185,12 +165,12 @@ rejected because it adds churn without changing the public contract.
 - The first version rejects text outside the tested Android-safe character set.
 - The ADB observation is a sequence of commands and can span a screen
   transition.
-- Mobilerun remains supported, so two concrete devices and one small factory
-  coexist.
+- The backend is ADB-only, so one concrete device and one small factory
+  exist.
 
 ## Alternatives considered
 
-A local HTTP shim that emulated Mobilerun was rejected. It would expose a
+A local HTTP shim that emulated a remote device API was rejected. It would expose a
 larger network protocol, duplicate transport policy, and make browser access
 more dangerous.
 

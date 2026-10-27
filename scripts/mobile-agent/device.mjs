@@ -2,11 +2,15 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
-import { curlRequest, decodeJson } from './http.mjs';
 import { prepareInputVerification } from './input-verification.mjs';
+import { HelperClient } from './helper.mjs';
 
 export const GLOBAL_ACTIONS = { back: 1, home: 2, recent: 3 };
 export const KEYS = { back: 4, tab: 61, enter: 66, delete: 67, forward_delete: 112 };
+// A drag moves the chosen element by a share of the screen, far enough to reorder a row or throw a
+// card away, and short enough to stay on screen.
+const DRAG_VECTORS = { LEFT: [-0.35, 0], RIGHT: [0.35, 0], UP: [0, -0.3], DOWN: [0, 0.3] };
+const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
 
 export class StaleObservationError extends Error {}
 
@@ -46,7 +50,12 @@ export function assertFresh(current, expected, action, maxAgeMs = 30_000) {
     );
   }
   let fresh;
-  if (action.type === 'tap-element') {
+  // Element gestures are checked like an element tap. A drag between two points has no element to
+  // compare, so it falls through to the screen-level check below.
+  const onElement =
+    action.type === 'tap-element' ||
+    (action.elementId && ['long-press', 'double-tap', 'drag'].includes(action.type));
+  if (onElement) {
     fresh =
       targetMeaning(expected, action.elementId) !== null &&
       targetMeaning(current, action.elementId) === targetMeaning(expected, action.elementId);
@@ -180,6 +189,62 @@ async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, i
         point(resolved.endX, resolved.endY);
       }
       break;
+    case 'long-press':
+    case 'double-tap': {
+      let at;
+      if (action.elementId) {
+        const node = current.elements.find((entry) => entry.id === action.elementId);
+        if (!node) throw new Error('Element is no longer on screen.');
+        at = {
+          x: Math.floor((node.bounds.left + node.bounds.right) / 2),
+          y: Math.floor((node.bounds.top + node.bounds.bottom) / 2),
+        };
+      } else {
+        point(action.x, action.y);
+        at = { x: action.x, y: action.y };
+      }
+      integer(action.duration ?? 600, 'duration', 10);
+      resolved = { type: action.type, ...at, duration: action.duration ?? 600 };
+      break;
+    }
+    case 'drag': {
+      if (action.from && action.to) {
+        point(action.from.x, action.from.y);
+        point(action.to.x, action.to.y);
+        resolved = {
+          type: 'drag',
+          startX: action.from.x,
+          startY: action.from.y,
+          endX: action.to.x,
+          endY: action.to.y,
+          duration: action.duration ?? 600,
+        };
+        break;
+      }
+      if (!Object.hasOwn(DRAG_VECTORS, action.direction))
+        throw new Error('Unsupported drag direction.');
+      const node = current.elements.find((entry) => entry.id === action.elementId);
+      if (!node) throw new Error('Element is no longer on screen.');
+      const [dx, dy] = DRAG_VECTORS[action.direction];
+      const startX = Math.floor((node.bounds.left + node.bounds.right) / 2);
+      const startY = Math.floor((node.bounds.top + node.bounds.bottom) / 2);
+      // `input swipe` moves at once, which the launcher treats as a fling. `draganddrop` presses,
+      // waits, then moves: what a finger does when it picks an icon up.
+      resolved = {
+        type: 'drag',
+        startX,
+        startY,
+        endX: clamp(startX + Math.round(dx * current.screen.width), 0, current.screen.width - 1),
+        endY: clamp(startY + Math.round(dy * current.screen.height), 0, current.screen.height - 1),
+        duration: action.duration ?? 600,
+      };
+      break;
+    }
+    case 'statusbar':
+      if (!['notifications', 'settings', 'collapse'].includes(action.view))
+        throw new Error('statusbar needs a view: notifications, settings or collapse.');
+      resolved = { type: 'statusbar', view: action.view };
+      break;
     case 'type':
       if (!current.phone.isEditable) throw new Error('Focus an editable field before typing.');
       if (
@@ -262,6 +327,7 @@ export function summarizeState(raw, deviceId) {
       if (text || label || node.isClickable || editable || node.isScrollable) {
         elements.push({
           id: path,
+          className: node.className || '',
           text,
           label,
           resourceId: node.resourceId || '',
@@ -317,141 +383,6 @@ export function summarizeState(raw, deviceId) {
   };
 }
 
-export class MobilerunDevice {
-  constructor({
-    apiKey = process.env.MOBILERUN_API_KEY || process.env.MOBILERUN_CLOUD_API_KEY,
-    deviceId = process.env.MOBILERUN_DEVICE_ID,
-    baseUrl = process.env.MOBILERUN_BASE_URL || 'https://api.mobilerun.ai/v1',
-    textCompletionMode = process.env.MOBILERUN_TEXT_COMPLETION_MODE || 'accepted',
-    request = curlRequest,
-  } = {}) {
-    this.apiKey = apiKey;
-    this.deviceId = deviceId;
-    const url = new URL(baseUrl);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash)
-      throw new Error('MOBILERUN_BASE_URL must be an HTTPS API base URL.');
-    this.baseUrl = url.href.replace(/\/$/, '');
-    this.request = request;
-    if (!['accepted', 'committed'].includes(textCompletionMode))
-      throw new Error('Text completion mode must be accepted or committed.');
-    this.textCompletionMode = textCompletionMode;
-    this.readyAt = -Infinity;
-    this.installedApps = [];
-  }
-
-  async api(path, method = 'GET', body, binary = false) {
-    const bytes = await this.request({
-      url: `${this.baseUrl}${path}`,
-      apiKey: this.apiKey,
-      method,
-      body,
-    });
-    return binary ? bytes : decodeJson(bytes);
-  }
-
-  path(suffix = '') {
-    if (!this.deviceId)
-      throw new Error('Set MOBILERUN_DEVICE_ID or pass --device. Use devices to list IDs.');
-    return `/devices/${encodeURIComponent(this.deviceId)}${suffix}`;
-  }
-
-  async listDevices() {
-    const devices = [];
-    for (let page = 1; page <= 1000; page++) {
-      const result = await this.api(`/devices?page=${page}&pageSize=100`);
-      if (!Array.isArray(result?.items)) throw new Error('Invalid device list response.');
-      devices.push(...result.items.map(({ id, name, state }) => ({ id, name, state })));
-      if (result.items.length < 100) return devices;
-    }
-    throw new Error('Device pagination exceeded 1000 pages.');
-  }
-
-  async listApps() {
-    const result = await this.api(this.path('/apps?includeSystemApps=true'));
-    if (!Array.isArray(result)) throw new Error('Invalid installed-app response.');
-    this.installedApps = result
-      .filter((app) => typeof app.packageName === 'string' && typeof app.label === 'string')
-      .map(({ packageName, label }) => ({ packageName, label }));
-    return this.installedApps;
-  }
-
-  async assertReady() {
-    const device = await this.api(this.path());
-    if (device?.state !== 'ready')
-      throw new Error(`Device is ${device?.state || 'unknown'}; it must be ready.`);
-    this.readyAt = performance.now();
-    return { id: device.id, name: device.name, state: device.state };
-  }
-
-  async observe() {
-    // Keep noninteractive text: it is evidence for goal completion and control labels.
-    return summarizeState(await this.api(this.path('/ui-state?filter=false')), this.deviceId);
-  }
-
-  async screenshot() {
-    const bytes = await this.api(this.path('/screenshot?hideOverlay=true'), 'GET', undefined, true);
-    if (!bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
-      throw new Error('Screenshot response is not a PNG.');
-    return bytes;
-  }
-
-  async act(action, { expected, maxAgeMs = 30_000 } = {}) {
-    return resolveAction(
-      this,
-      action,
-      { expected, maxAgeMs },
-      async (resolved) => {
-        switch (resolved.type) {
-          case 'open-app':
-            await this.api(
-              this.path(`/apps/${encodeURIComponent(resolved.packageName)}`),
-              'PUT',
-              {},
-            );
-            return;
-          case 'tap':
-            await this.api(this.path('/tap'), 'POST', { x: resolved.x, y: resolved.y });
-            return;
-          case 'swipe': {
-            const body = {
-              startX: resolved.startX,
-              startY: resolved.startY,
-              endX: resolved.endX,
-              endY: resolved.endY,
-              duration: resolved.duration,
-            };
-            await this.api(this.path('/swipe'), 'POST', body);
-            return;
-          }
-          case 'type': {
-            const accepted =
-              this.textCompletionMode === 'accepted' && Boolean(resolved.inputVerification);
-            await this.api(this.path('/keyboard'), 'POST', {
-              text: resolved.text,
-              clear: resolved.clear,
-              completionMode: accepted ? 'accepted' : 'committed',
-            });
-            return;
-          }
-          case 'clear':
-            await this.api(this.path('/keyboard'), 'DELETE');
-            return;
-          case 'key':
-            await this.api(this.path('/keyboard'), 'PUT', { key: KEYS[resolved.key] });
-            return;
-          case 'global':
-            await this.api(this.path('/global'), 'POST', { action: GLOBAL_ACTIONS[resolved.name] });
-            return;
-          default:
-            throw new Error('Unsupported action type.');
-        }
-      },
-      (current, action) =>
-        this.textCompletionMode === 'accepted' ? prepareInputVerification(current, action) : null,
-    );
-  }
-}
-
 const execFilePromise = promisify(execFile);
 const execFileAsync = async (...args) => {
   const { stdout, stderr } = await execFilePromise(...args);
@@ -484,6 +415,8 @@ function parseTree(value) {
     focusedInput ||= node.focused === 'true' && className.includes('EditText');
     return {
       className,
+      // The app that owns the node: it names the foreground app when the helper cannot.
+      package: node.package || '',
       text: node.text || '',
       contentDescription: node['content-desc'] || '',
       resourceId: node['resource-id'] || '',
@@ -539,9 +472,11 @@ function currentDisplaySize(windowText) {
   const section = selected || displaySections[0] || '';
   const sizes = (names) => [
     ...new Set(
-      [...section.matchAll(new RegExp(`\\b(?:${names})\\s*(?:=|:)\\s*(\\d+)\\s*[xX]\\s*(\\d+)`, 'gi'))].map(
-        (match) => `${Number(match[1])}x${Number(match[2])}`,
-      ),
+      [
+        ...section.matchAll(
+          new RegExp(`\\b(?:${names})\\s*(?:=|:)\\s*(\\d+)\\s*[xX]\\s*(\\d+)`, 'gi'),
+        ),
+      ].map((match) => `${Number(match[1])}x${Number(match[2])}`),
     ),
   ];
   // cur= is the display size; app= is the app viewport and legitimately differs, so only
@@ -552,12 +487,7 @@ function currentDisplaySize(windowText) {
     throw new Error('ADB dumpsys window returned ambiguous current display bounds.');
   if (resolved.length === 0) return null;
   const [width, height] = resolved[0].split('x').map(Number);
-  if (
-    !Number.isSafeInteger(width) ||
-    width < 1 ||
-    !Number.isSafeInteger(height) ||
-    height < 1
-  )
+  if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1)
     throw new Error('ADB dumpsys window returned invalid current display bounds.');
   return { width, height };
 }
@@ -571,29 +501,51 @@ function wmDisplaySize(sizeText) {
 
 function assertTreeFitsScreen(tree, size) {
   const root = tree.boundsInScreen || tree.children?.[0]?.boundsInScreen;
-  if (
-    !root ||
-    root.left !== 0 ||
-    root.top !== 0 ||
-    root.right !== size.width ||
-    root.bottom !== size.height
-  )
+  // The accessibility root is normally inset by the status and navigation bars (Chrome reports
+  // [0,136][1080,2337]), and a dialog or bubble is a legitimate root of its own (a popup can be a
+  // fraction of the screen). So the rule is only that the tree sits inside the display and is not
+  // empty; taps are checked by observing whether the screen actually changed.
+  const inside = (bounds) =>
+    bounds.left >= 0 &&
+    bounds.top >= 0 &&
+    bounds.right <= size.width &&
+    bounds.bottom <= size.height;
+  const empty = (bounds) => bounds.right <= bounds.left || bounds.bottom <= bounds.top;
+  if (!root || !inside(root) || empty(root))
     throw new Error('ADB UIAutomator bounds do not match the current display bounds.');
   const visit = (node) => {
-    for (const child of node.children || []) {
-      if (
-        child.boundsInScreen &&
-        (child.boundsInScreen.right > size.width || child.boundsInScreen.bottom > size.height)
-      )
-        throw new Error('ADB UIAutomator bounds exceed the current display bounds.');
-      visit(child);
-    }
+    if (node.boundsInScreen && !inside(node.boundsInScreen))
+      throw new Error('ADB UIAutomator bounds exceed the current display bounds.');
+    for (const child of node.children || []) visit(child);
   };
   visit(tree);
 }
 
+/**
+ * The app that owns most of the tree, for screens where the helper cannot name the foreground app.
+ * The status bar and notification shade belong to systemui and are always present, so the most
+ * common package is the app, not the first one encountered.
+ */
+function treePackage(node) {
+  const counts = new Map();
+  const visit = (current) => {
+    if (current?.package) counts.set(current.package, (counts.get(current.package) ?? 0) + 1);
+    for (const child of current?.children || []) visit(child);
+  };
+  visit(node);
+  let best = '',
+    most = 0;
+  for (const [name, count] of counts) {
+    if (count > most) {
+      best = name;
+      most = count;
+    }
+  }
+  return best;
+}
+
 export class AdbDevice {
-  constructor({ serial, adbPath = 'adb', execFile: runner = execFileAsync } = {}) {
+  constructor({ serial, adbPath = 'adb', execFile: runner = execFileAsync, helper = false } = {}) {
     if (typeof serial !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(serial.trim()))
       throw new Error('ADB mode requires one explicit serial using letters, numbers, . _ : or -.');
     this.serial = serial.trim();
@@ -602,6 +554,12 @@ export class AdbDevice {
     this.execFile = runner;
     this.readyAt = -Infinity;
     this.installedApps = [];
+    // The accessibility helper app reads the tree and takes a screenshot in one request, without
+    // taking the UiAutomation channel that uiautomator needs. Opt-in: it costs one probe per run.
+    this.helper = helper
+      ? new HelperClient({ serial: this.serial, adbPath, execFile: runner })
+      : null;
+    this.snapshotImage = null;
   }
 
   async run(args, mutation = false, options = {}) {
@@ -619,10 +577,17 @@ export class AdbDevice {
     } catch (error) {
       if (mutation)
         throw new Error('ADB mutation outcome is uncertain; the action was not retried.');
+      // The device's own words are the only way to tell a launching app ("could not get idle state")
+      // from a dead connection, which need opposite handling.
+      // `uiautomator` reports its own failures on stdout, not stderr, so read both.
+      const reason = String(error?.stderr || error?.stdout || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 160);
       throw new Error(
         error?.code === 'ENOENT'
           ? 'Could not run adb. Install Android platform-tools and retry.'
-          : 'ADB read failed. Check the explicit serial and device connection.',
+          : `ADB read failed${reason ? `: ${reason}` : ''}. Check the explicit serial and device connection.`,
       );
     }
   }
@@ -630,15 +595,70 @@ export class AdbDevice {
   async assertReady() {
     const state = (await this.run(['get-state'])).toString('utf8').trim();
     if (state !== 'device') throw new Error(`ADB device is ${state || 'unavailable'}.`);
+    await this.wake();
     this.readyAt = performance.now();
     return { id: this.serial, name: this.serial, state: 'ready' };
   }
 
+  /**
+   * A phone that fell asleep reports no focused window and an empty tree, so every step after the
+   * screen timeout fails as if the app had vanished. Wake it and dismiss the keyguard instead.
+   */
+  async wake() {
+    try {
+      const power = (await this.run(['shell', 'dumpsys', 'power'])).toString('utf8');
+      // Only a clear "asleep" is worth acting on: an answer we cannot read is not evidence.
+      if (!/mWakefulness=/.test(power) || /mWakefulness=(Awake|Dreaming)/.test(power)) return false;
+      await this.run(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'], true);
+      await this.run(['shell', 'wm', 'dismiss-keyguard'], true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async observe() {
+    // A dump taken while a window is settling can disagree with the display size, or arrive as
+    // malformed XML. Those are stale reads, and a read is safe to repeat: do not end the run for them.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.readObservation();
+      } catch (error) {
+        // A window that is still animating has no idle state yet, and the dump then writes an error
+        // instead of XML. Waiting is the fix; a real disconnect keeps failing and is reported.
+        const transient =
+          /do not match the current display|malformed XML|could not get (idle state|dump)|ERROR: could not/.test(
+            error?.message,
+          );
+        // A launch animation keeps `uiautomator dump` unreliable for about a second; the read is
+        // free to repeat, so wait it out instead of ending the run.
+        if (!transient || attempt >= 3) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      }
+    }
+  }
+
+  async readObservation() {
+    // One request for the tree and the image, when the helper is there; about 20 times faster than
+    // an adb dump, and the image comes from the same instant as the tree.
+    if (this.helper) {
+      // The helper is the reliable path: one request, no UiAutomation contention, no dump file. A
+      // momentary miss is worth repeating before falling back to the slower, fussier adb read.
+      for (let attempt = 0; (await this.helper.available()) && attempt < 3; attempt++) {
+        const snapshot = await this.helper.snapshot();
+        if (snapshot) return this.observationFromSnapshot(snapshot);
+        await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
+      }
+    }
+    this.snapshotImage = null;
     const [sizeOutput, windowOutput, xmlOutput] = await Promise.all([
       this.run(['shell', 'wm', 'size']),
       this.run(['shell', 'dumpsys', 'window']),
-      this.run(['exec-out', 'uiautomator', 'dump', '/dev/tty']),
+      // Dump to a file and read it back: `dump /dev/tty` truncates or interleaves the XML on larger
+      // trees (a settings screen is about 30 KB), which the parser then rejects as malformed.
+      this.run(['shell', 'uiautomator', 'dump', '/sdcard/window_dump.xml']).then(() =>
+        this.run(['exec-out', 'cat', '/sdcard/window_dump.xml']),
+      ),
     ]);
     const sizeText = sizeOutput.toString('utf8');
     const windowText = windowOutput.toString('utf8');
@@ -655,6 +675,30 @@ export class AdbDevice {
         phone_state: {
           packageName: foreground?.[1] || '',
           currentApp: foreground ? `${foreground[1]}/${foreground[2]}` : '',
+          keyboardVisible: focusedInput,
+          isEditable: focusedInput,
+        },
+        a11y_tree: tree,
+      },
+      this.serial,
+    );
+  }
+
+  observationFromSnapshot(snapshot) {
+    const size = { width: snapshot.width, height: snapshot.height };
+    if (!size.width || !size.height) throw new Error('The helper returned invalid screen bounds.');
+    const { tree, focusedInput } = parseUiAutomatorXml(Buffer.from(snapshot.xml, 'utf8'));
+    assertTreeFitsScreen(tree, size);
+    // The image must match the tree the policy is about to read, so keep the pair together.
+    this.snapshotImage = snapshot.image;
+    const packageName = snapshot.packageName || treePackage(tree) || '';
+    return summarizeState(
+      {
+        device_context: { screen_bounds: size },
+        phone_state: {
+          packageName,
+          currentApp:
+            snapshot.activity && packageName ? `${packageName}/${snapshot.activity}` : packageName,
           keyboardVisible: focusedInput,
           isEditable: focusedInput,
         },
@@ -738,6 +782,55 @@ export class AdbDevice {
         }
         if (resolved.type === 'tap')
           return this.run(['shell', 'input', 'tap', String(resolved.x), String(resolved.y)], true);
+        if (resolved.type === 'long-press')
+          // `input tap` has no duration; a zero-length swipe is how a hold is expressed.
+          return this.run(
+            [
+              'shell',
+              'input',
+              'swipe',
+              String(resolved.x),
+              String(resolved.y),
+              String(resolved.x),
+              String(resolved.y),
+              String(resolved.duration),
+            ],
+            true,
+          );
+        if (resolved.type === 'double-tap') {
+          await this.run(['shell', 'input', 'tap', String(resolved.x), String(resolved.y)], true);
+          return this.run(['shell', 'input', 'tap', String(resolved.x), String(resolved.y)], true);
+        }
+        if (resolved.type === 'drag')
+          return this.run(
+            [
+              'shell',
+              'input',
+              'draganddrop',
+              String(resolved.startX),
+              String(resolved.startY),
+              String(resolved.endX),
+              String(resolved.endY),
+              String(resolved.duration),
+            ],
+            true,
+          );
+        if (resolved.type === 'statusbar')
+          return this.run(
+            [
+              'shell',
+              'cmd',
+              'statusbar',
+              // The quick settings tiles (brightness, wifi, bluetooth) only exist on the expanded
+              // panel; expanding the notification list alone closes them again.
+              {
+                notifications: 'expand-notifications',
+                settings: 'expand-settings',
+                collapse: 'collapse',
+              }[resolved.view],
+            ],
+            true,
+          );
         if (resolved.type === 'swipe')
           return this.run(
             [

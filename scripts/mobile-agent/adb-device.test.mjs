@@ -63,7 +63,9 @@ function fakeAdb({
     if (command === 'get-state') return [Buffer.from('device\n'), Buffer.alloc(0)];
     if (command === 'shell wm size') return [Buffer.from(sizeText), Buffer.alloc(0)];
     if (command === 'shell dumpsys window') return [Buffer.from(windowText), Buffer.alloc(0)];
-    if (command === 'exec-out uiautomator dump /dev/tty')
+    if (command === 'shell uiautomator dump /sdcard/window_dump.xml')
+      return [Buffer.from('UI hierchary dumped to: /sdcard/window_dump.xml\n'), Buffer.alloc(0)];
+    if (command === 'exec-out cat /sdcard/window_dump.xml')
       return [Buffer.from(xmlText), Buffer.alloc(0)];
     if (
       command ===
@@ -91,18 +93,19 @@ function fakeAdb({
   return { calls, device: new AdbDevice({ serial: 'emulator-5554', execFile: runner }) };
 }
 
-test('ADB configuration is explicit, defaults to Mobilerun, and rejects unsupported backends', () => {
-  assert.deepEqual(deviceConfig({}), { backend: 'mobilerun' });
-  assert.deepEqual(deviceConfig({ JEV_DEVICE_BACKEND: 'adb', ADB_SERIAL: 'emulator-5554' }), {
-    backend: 'adb',
+test('ADB configuration requires one explicit serial', () => {
+  assert.deepEqual(deviceConfig({ ADB_SERIAL: 'emulator-5554' }), {
     adbSerial: 'emulator-5554',
   });
-  assert.throws(() => deviceConfig({ JEV_DEVICE_BACKEND: 'adb' }), /serial/i);
-  assert.throws(() => deviceConfig({ JEV_DEVICE_BACKEND: 'usb' }), /mobilerun or adb/);
+  assert.deepEqual(deviceConfig({}, { adbSerial: 'emulator-5554' }), {
+    adbSerial: 'emulator-5554',
+  });
+  assert.throws(() => deviceConfig({}), /serial/i);
+  assert.throws(() => deviceConfig({ ADB_SERIAL: '  ' }), /serial/i);
   assert.throws(() => new AdbDevice({ serial: '  ' }), /serial/);
   assert.throws(() => new AdbDevice({ serial: 'bad serial' }), /serial/);
   assert.equal(new AdbDevice({ serial: ' emulator-5554 ' }).serial, 'emulator-5554');
-  assert.ok(createAgentDevice({ backend: 'adb', adbSerial: 'emulator-5554' }) instanceof AdbDevice);
+  assert.ok(createAgentDevice({ adbSerial: 'emulator-5554' }) instanceof AdbDevice);
 });
 
 test('UIAutomator XML becomes a deterministic normalized observation', async () => {
@@ -114,7 +117,8 @@ test('UIAutomator XML becomes a deterministic normalized observation', async () 
   assert.equal(first.phone.packageName, 'com.example.app');
   assert.equal(first.phone.inputElementId, 'ui.0.0');
   assert.equal(first.elements[0].resourceId, 'com.example.app:id/search');
-  assert.equal(calls.length, 6);
+  // Four reads per observation: size, windows, dump to file, read the file back.
+  assert.equal(calls.length, 8);
   assert.ok(calls.every(({ options }) => options.shell === false));
 });
 test('ADB uses current landscape display bounds for coordinates and input', async () => {
@@ -311,4 +315,46 @@ test('ADB rejects unsupported text before dispatch', async () => {
     /supports only/,
   );
   assert.equal(calls.length, 0);
+});
+
+test('long press, double tap, drag and the notification shade dispatch one clear argv each', async () => {
+  const { device, calls } = fakeAdb();
+  const expected = screen();
+  device.observe = async () => expected;
+  await device.assertReady();
+  calls.length = 0;
+  const elementId = expected.elements.find((e) => e.clickable).id;
+  const centre = expected.elements.find((e) => e.id === elementId).bounds;
+
+  await device.act({ type: 'long-press', elementId }, { expected });
+  await device.act({ type: 'double-tap', elementId }, { expected });
+  await device.act({ type: 'drag', elementId, direction: 'LEFT' }, { expected });
+  await device.act({ type: 'statusbar', view: 'notifications' }, { expected });
+  await device.act({ type: 'statusbar', view: 'settings' }, { expected });
+  await device.act({ type: 'statusbar', view: 'collapse' }, { expected });
+
+  const commands = calls.map((call) => call.args.slice(2).join(' '));
+  const x = Math.floor((centre.left + centre.right) / 2);
+  const y = Math.floor((centre.top + centre.bottom) / 2);
+  // A hold is a zero-length swipe, so the touch stays down for its duration.
+  assert.ok(commands.includes(`shell input swipe ${x} ${y} ${x} ${y} 600`));
+  assert.equal(commands.filter((command) => command === `shell input tap ${x} ${y}`).length, 2);
+  // A drag presses, waits, then moves; a swipe would be read as a fling.
+  assert.ok(commands.some((command) => command.startsWith('shell input draganddrop ')));
+  assert.ok(commands.includes('shell cmd statusbar expand-notifications'));
+  assert.ok(commands.includes('shell cmd statusbar expand-settings'));
+  assert.ok(commands.includes('shell cmd statusbar collapse'));
+});
+
+test('a drag between two points uses draganddrop, not a fling', async () => {
+  const { device, calls } = fakeAdb();
+  const expected = screen();
+  device.observe = async () => expected;
+  await device.assertReady();
+  calls.length = 0;
+  await device.act({ type: 'drag', from: { x: 40, y: 300 }, to: { x: 320, y: 300 } }, { expected });
+  assert.deepEqual(
+    calls.map((call) => call.args.slice(2).join(' ')),
+    ['shell input draganddrop 40 300 320 300 600'],
+  );
 });

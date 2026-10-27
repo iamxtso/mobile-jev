@@ -5,6 +5,7 @@ import { summarizeState, assertFresh } from './device.mjs';
 import { candidatesFor, describeAction } from './actions.mjs';
 import { TypeSafePolicy } from './policy.mjs';
 import { runAgent } from './agent.mjs';
+process.env.TYPESAFE_MODEL ??= 'test-model';
 
 const bounds = { left: 0, top: 0, right: 400, bottom: 100 };
 const input = {

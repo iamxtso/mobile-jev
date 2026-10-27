@@ -1,16 +1,6 @@
 import { Smartphone, ArrowUpRight, Command } from 'lucide-react';
 
-export type MobilerunDevice = {
-  kind: 'mobilerun';
-  id: string;
-  name: string;
-  state: string;
-  streamUrl: string | null;
-  streamToken: string | null;
-  environment: 'Cloud' | 'Staging';
-  control: 'remote';
-};
-export type AdbDevice = {
+export type Device = {
   kind: 'adb';
   id: string;
   name: string;
@@ -18,7 +8,6 @@ export type AdbDevice = {
   snapshotUrl: string | null;
   control: 'disabled';
 };
-export type Device = MobilerunDevice | AdbDevice;
 export type Event = {
   type: 'decision' | 'action' | 'result' | 'error';
   at: number;
@@ -27,6 +16,14 @@ export type Event = {
   label?: string;
   confidence?: number;
   targetConfidence?: number;
+  /** How sure the screen shows the finished goal, when the model was asked (DONE check). */
+  goalVisible?: number;
+  /** True when a coordinate tap was snapped onto an observed control. */
+  snapped?: boolean;
+  /** The coordinate a TAP_POINT chose, in screen pixels. */
+  point?: { x: number; y: number };
+  /** Probability that the step would send, post, publish, delete, buy or pay. */
+  commitProbability?: number;
   latencyMs?: number;
   model?: string;
   outcome?: string;
@@ -51,6 +48,7 @@ export const statusLabels: Record<string, string> = {
   stopping: 'Stopping',
   succeeded: 'Completed',
   stopped: 'Stopped',
+  exhausted: 'Out of steps',
   blocked: 'Needs attention',
   failed: 'Run failed',
 };

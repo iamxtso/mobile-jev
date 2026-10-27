@@ -2,7 +2,7 @@
   "name": "mobile-jev",
   "version": "0.1.0",
   "private": true,
-  "description": "A fast mobile agent: Jev makes typed decisions, Mobilerun executes them.",
+  "description": "A fast mobile agent: Jev makes typed decisions, ADB executes them.",
   "license": "MIT",
   "packageManager": "pnpm@10.30.1",
   "engines": {
@@ -21,7 +21,8 @@
     "lint": "eslint .",
     "format": "prettier . --check",
     "format:fix": "prettier . --write",
-    "check": "pnpm test && pnpm lint && pnpm typecheck && pnpm format && pnpm build"
+    "check": "pnpm test && pnpm lint && pnpm typecheck && pnpm format && pnpm build",
+    "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",

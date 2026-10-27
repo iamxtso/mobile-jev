@@ -1,12 +1,7 @@
 'use client';
-import dynamic from 'next/dynamic';
 import { useEffect, useState, type CSSProperties } from 'react';
 import { ArrowLeft, Circle, Expand, Radio, RefreshCw, Smartphone, Square } from 'lucide-react';
 import type { StudioState } from './use-studio';
-const DeviceStream = dynamic(
-  () => import('@mobilerun/react').then((module) => module.DeviceStream),
-  { ssr: false },
-);
 function AdbSnapshot({
   url,
   onConnection,
@@ -70,8 +65,7 @@ function AdbSnapshot({
   );
 }
 export function DevicePanel({ state }: { state: StudioState }) {
-  const { connected, device, phoneStage, deviceError, controls, busy, loadDevice, setConnected } =
-    state;
+  const { connected, device, phoneStage, deviceError, busy, loadDevice, setConnected } = state;
   // The device may be a landscape infotainment screen; the frame follows its snapshot.
   const [aspect, setAspect] = useState<{ value: string; wide: boolean } | null>(null);
   return (
@@ -118,53 +112,23 @@ export function DevicePanel({ state }: { state: StudioState }) {
                   Reconnect
                 </button>
               </div>
-            ) : device?.kind === 'adb' ? (
+            ) : (
               <AdbSnapshot
-                url={device.snapshotUrl || ''}
+                url={device?.snapshotUrl || ''}
                 onConnection={setConnected}
                 onAspect={(value, wide) => setAspect({ value, wide })}
-              />
-            ) : (
-              <DeviceStream
-                ref={controls}
-                streamUrl={device?.kind === 'mobilerun' ? device.streamUrl || undefined : undefined}
-                streamToken={
-                  device?.kind === 'mobilerun' ? device.streamToken || undefined : undefined
-                }
-                hasControl={!busy && device?.kind === 'mobilerun'}
-                muted
-                placeholderLabel={device?.state || 'Connecting to your phone'}
-                onStreamHealed={loadDevice}
-                onConnectionStateChange={setConnected}
               />
             )}
           </div>
         </div>
         <div className="device-navigation">
-          <button
-            aria-label="Android back"
-            title="Back"
-            disabled={!connected || busy || device?.control === 'disabled'}
-            onClick={() => device?.kind === 'mobilerun' && controls.current?.sendSystemKey('BACK')}
-          >
+          <button aria-label="Android back" title="Back" disabled>
             <ArrowLeft size={17} />
           </button>
-          <button
-            aria-label="Android home"
-            title="Home"
-            disabled={!connected || busy || device?.control === 'disabled'}
-            onClick={() => device?.kind === 'mobilerun' && controls.current?.sendSystemKey('HOME')}
-          >
+          <button aria-label="Android home" title="Home" disabled>
             <Circle size={15} />
           </button>
-          <button
-            aria-label="Android recent apps"
-            title="Recent apps"
-            disabled={!connected || busy || device?.control === 'disabled'}
-            onClick={() =>
-              device?.kind === 'mobilerun' && controls.current?.sendSystemKey('RECENT')
-            }
-          >
+          <button aria-label="Android recent apps" title="Recent apps" disabled>
             <Square size={13} />
           </button>
           <span />
@@ -179,7 +143,7 @@ export function DevicePanel({ state }: { state: StudioState }) {
             : device?.control === 'disabled'
               ? 'Snapshot only · controls disabled'
               : 'Touch & keyboard enabled'}
-          <span>ANDROID · {device?.kind === 'adb' ? 'ADB' : 'MOBILERUN'}</span>
+          <span>ANDROID · ADB</span>
         </div>
       </div>
     </section>

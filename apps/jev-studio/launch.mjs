@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 
 import { loadEnvironment } from '../../scripts/env.mjs';
 loadEnvironment();
+const port = process.env.STUDIO_PORT;
+if (!port) throw new Error('STUDIO_PORT is required.');
 const child = spawn(
   process.execPath,
   [
@@ -11,7 +13,7 @@ const child = spawn(
     '--hostname',
     '127.0.0.1',
     '--port',
-    process.env.STUDIO_PORT || '3040',
+    port,
   ],
   { stdio: 'inherit', env: process.env, cwd: fileURLToPath(new URL('.', import.meta.url)) },
 );

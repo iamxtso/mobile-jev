@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildQuestions, TypeSafePolicy, validateChoice } from './policy.mjs';
 import { assertFresh, StaleObservationError } from './device.mjs';
 import { runAgent } from './agent.mjs';
+process.env.TYPESAFE_MODEL ??= 'test-model';
 
 const node = (id, text, extra = {}) => ({
   id,
@@ -45,11 +46,13 @@ test('operation and compatible targets are asked in one call; only selected targ
       assert.deepEqual(Object.keys(body.questions), [
         'operation',
         'tap_target',
-        'scroll_target',
+        'gesture_target',
+        'drag_direction',
         'text_value',
       ]);
       assert.equal(Object.keys(body.questions.tap_target.criteria).length, 2);
-      assert.equal(Object.keys(body.questions.scroll_target.criteria).length, 1);
+      // One scroll region: a one-option choice is rejected by the API, so the answer is forced.
+      assert.equal(body.questions.scroll_target, undefined);
       return Buffer.from(
         JSON.stringify({
           model: 'jev-test',
@@ -76,16 +79,18 @@ test('operation and compatible targets are asked in one call; only selected targ
 
 test('scroll choice consumes its region only; single-candidate target is supported', async () => {
   const policy = new TypeSafePolicy({
-    request: async ({ body }) =>
-      Buffer.from(
+    request: async ({ body }) => {
+      // A choice needs two options, so the only region is forced rather than asked.
+      assert.equal(body.questions.scroll_target, undefined);
+      return Buffer.from(
         JSON.stringify({
           answers: {
             operation: answer(body.questions.operation.criteria, 'SCROLL_DOWN'),
-            scroll_target: answer(body.questions.scroll_target.criteria),
             tap_target: { choice: 'not-offered' },
           },
         }),
-      ),
+      );
+    },
   });
   const decision = await policy.decide({ goal: 'Find version', observation: observe() });
   assert.equal(decision.action.type, 'swipe');
@@ -176,16 +181,16 @@ test('unavailable operations are omitted', () => {
   assert.equal(questions.operation.criteria.SCROLL_DOWN, undefined);
 });
 
-test('Jev selects a discovered app; exact goal names narrow the inventory', async () => {
+test('exact goal names narrow the inventory; one remaining app is forced', async () => {
   const policy = new TypeSafePolicy({
     request: async ({ body }) => {
-      assert.equal(Object.keys(body.questions.app_target.criteria).length, 1);
+      assert.equal(body.questions.app_target, undefined);
+      assert.equal(body.state.availableApps.length, 1);
       assert.equal(body.state.availableApps[0].label, 'Notes');
       return Buffer.from(
         JSON.stringify({
           answers: {
             operation: answer(body.questions.operation.criteria, 'OPEN_APP'),
-            app_target: answer(body.questions.app_target.criteria, '1'),
           },
         }),
       );
@@ -376,4 +381,315 @@ test('stale decisions re-observe and re-predict; uncertain mutations never retry
       assert.equal(decisions, 1);
     }
   }
+});
+
+test('a screenshot adds one box question; the accessibility tree is used when it has the control', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) => {
+      assert.ok(body.assets.screenshot.data_base64);
+      assert.equal(body.state.screen, 'screenshot');
+      assert.ok(body.questions.operation.criteria.TAP_POINT);
+      assert.equal(body.questions.target_point.type, 'box');
+      assert.equal(typeof body.questions.target_point.instructions, 'string');
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP_POINT'),
+            target_point: { type: 'box', box: { left: 0.1, top: 0.3, right: 0.2, bottom: 0.4 } },
+          },
+        }),
+      );
+    },
+  });
+  // Two separate rows on a 200x400 screen; the box covers the second one only.
+  const observation = observe();
+  observation.elements = [
+    node('ui.0', 'Search', { editable: true, bounds: { left: 0, top: 0, right: 200, bottom: 60 } }),
+    node('ui.1', 'About phone', { bounds: { left: 0, top: 100, right: 200, bottom: 200 } }),
+  ];
+  const decision = await policy.decide({
+    goal: 'Open About phone',
+    observation,
+    image: 'AAAA',
+  });
+  assert.equal(decision.operation, 'TAP_POINT');
+  assert.equal(decision.snapped, true);
+  assert.deepEqual(decision.action, { type: 'tap-element', elementId: 'ui.1' });
+  assert.deepEqual(decision.point, { x: 30, y: 140 });
+});
+
+test('a screenshot still taps when no observed element contains the point', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) =>
+      Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP_POINT'),
+            // Below every element in the fixture: 0.5..0.7 of 400px is y=200..280.
+            target_point: { type: 'box', box: { left: 0.4, top: 0.5, right: 0.6, bottom: 0.7 } },
+          },
+        }),
+      ),
+  });
+  const decision = await policy.decide({
+    goal: 'Dismiss the banner',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.snapped, false);
+  assert.deepEqual(decision.action, { type: 'tap', x: 100, y: 240 });
+});
+
+test('a box that is not four ordered fractions is rejected', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) =>
+      Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP_POINT'),
+            target_point: { type: 'box', box: { left: 0.8, top: 0.1, right: 0.2, bottom: 0.3 } },
+          },
+        }),
+      ),
+  });
+  await assert.rejects(
+    policy.decide({ goal: 'Anything', observation: observe(), image: 'AAAA' }),
+    /invalid box/,
+  );
+});
+
+test('without a screenshot the request stays text-only', () => {
+  const { questions } = buildQuestions(observe(), ['hello']);
+  assert.equal(questions.target_point, undefined);
+  assert.equal(questions.operation.criteria.TAP_POINT, undefined);
+});
+
+const visionPolicy = (goalVisible, operation = 'DONE') =>
+  new TypeSafePolicy({
+    request: async ({ body }) => {
+      assert.equal(body.questions.goal_visible.type, 'noul');
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, operation),
+            target_point: { type: 'box', box: { left: 0.1, top: 0.1, right: 0.2, bottom: 0.2 } },
+            goal_visible: { type: 'noul', noul: goalVisible },
+          },
+        }),
+      );
+    },
+  });
+
+test('DONE is reported as done only when the screen agrees', async () => {
+  const decision = await visionPolicy(0.97).decide({
+    goal: 'Open About phone',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.status, 'done');
+  assert.equal(decision.goalVisible, 0.97);
+  assert.equal(decision.reason, undefined);
+});
+
+test('DONE against a screen that does not show the goal is reported, not accepted', async () => {
+  const decision = await visionPolicy(0).decide({
+    goal: 'Post the message',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.status, 'done_unverified');
+  assert.match(decision.reason, /not visible/);
+});
+
+test('a model that answers no noul question keeps the old DONE behaviour', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) =>
+      Buffer.from(
+        JSON.stringify({
+          answers: { operation: answer(body.questions.operation.criteria, 'DONE') },
+        }),
+      ),
+  });
+  const decision = await policy.decide({ goal: 'x', observation: observe(), image: 'AAAA' });
+  assert.equal(decision.status, 'done');
+  assert.equal(decision.goalVisible, undefined);
+});
+
+const spread = (criteria, choice, confidence) => {
+  const keys = Object.keys(criteria);
+  const rest = (1 - confidence) / (keys.length - 1);
+  return Object.fromEntries(keys.map((key) => [key, key === choice ? confidence : rest]));
+};
+
+const commitPolicy = (commitProbability, confidence = 0.6) =>
+  new TypeSafePolicy({
+    request: async ({ body }) => {
+      if (body.questions.commit) {
+        assert.equal(body.questions.commit.type, 'noul');
+        assert.match(body.state.next, /^(Tap|Focus text input)/);
+        return Buffer.from(
+          JSON.stringify({ answers: { commit: { type: 'noul', noul: commitProbability } } }),
+        );
+      }
+      const operationAnswer = answer(body.questions.operation.criteria, 'TAP', confidence);
+      const choice = operationAnswer.choice;
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: {
+              ...operationAnswer,
+              probabilities: spread(body.questions.operation.criteria, choice, confidence),
+            },
+            tap_target: answer(body.questions.tap_target.criteria),
+            target_point: { type: 'box', box: { left: 0.1, top: 0.1, right: 0.2, bottom: 0.2 } },
+            goal_visible: { type: 'noul', noul: 0 },
+          },
+        }),
+      );
+    },
+  });
+
+test('an unsure step that would commit something is reported instead of executed', async () => {
+  const decision = await commitPolicy(0.95).decide({
+    goal: 'Buy the ticket',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.status, 'uncertain');
+  assert.equal(decision.operation, 'TAP');
+  assert.equal(decision.commitProbability, 0.95);
+  assert.match(decision.reason, /would commit/);
+});
+
+test('an unsure step that commits nothing runs', async () => {
+  const decision = await commitPolicy(0.02).decide({
+    goal: 'Open About phone',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.commitProbability, 0.02);
+  assert.equal(decision.action.type, 'tap-element');
+});
+
+test('a confident step is not asked about committing at all', async () => {
+  let asked = 0;
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) => {
+      if (body.questions.commit) asked++;
+      const choice = 'TAP';
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: {
+              type: 'choice',
+              choice,
+              confidence: 0.99,
+              probabilities: spread(body.questions.operation.criteria, choice, 0.99),
+            },
+            tap_target: answer(body.questions.tap_target.criteria),
+            target_point: { type: 'box', box: { left: 0.1, top: 0.1, right: 0.2, bottom: 0.2 } },
+          },
+        }),
+      );
+    },
+  });
+  const decision = await policy.decide({
+    goal: 'Open About phone',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(asked, 0);
+  assert.equal(decision.status, 'action');
+});
+
+test('a point drag carries both ends in screen pixels', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) => {
+      assert.ok(body.questions.drag_to);
+      assert.ok(body.questions.operation.criteria.DRAG_POINT);
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'DRAG_POINT'),
+            target_point: { type: 'box', box: { left: 0.1, top: 0.1, right: 0.2, bottom: 0.2 } },
+            drag_to: { type: 'box', box: { left: 0.5, top: 0.5, right: 0.6, bottom: 0.6 } },
+          },
+        }),
+      );
+    },
+  });
+  // The fixture screen is 200x400.
+  const decision = await policy.decide({
+    goal: 'Move the slider',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.operation, 'DRAG_POINT');
+  assert.equal(decision.status, 'action');
+  assert.deepEqual(decision.drag, { from: { x: 30, y: 60 }, to: { x: 110, y: 220 } });
+  assert.deepEqual(decision.action, {
+    type: 'drag',
+    from: { x: 30, y: 60 },
+    to: { x: 110, y: 220 },
+  });
+});
+
+test('a point drag with a missing end is rejected', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) =>
+      Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'DRAG_POINT'),
+            target_point: { type: 'box', box: { left: 0.1, top: 0.1, right: 0.2, bottom: 0.2 } },
+          },
+        }),
+      ),
+  });
+  await assert.rejects(
+    policy.decide({ goal: 'Move the slider', observation: observe(), image: 'AAAA' }),
+    /invalid box/,
+  );
+});
+
+test('a slider is listed even though Android does not report it as clickable', async () => {
+  const observation = observe();
+  observation.elements.push({
+    ...node('ui.9', ''),
+    className: 'android.widget.SeekBar',
+    clickable: false,
+    text: '',
+    label: 'Display brightness',
+    bounds: { left: 0, top: 200, right: 200, bottom: 300 },
+  });
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) => {
+      // Not a tap candidate: a click on the track centre would set the middle value.
+      assert.equal(
+        Object.values(body.questions.tap_target?.criteria || {}).some((text) =>
+          text.includes('Display brightness'),
+        ),
+        false,
+      );
+      assert.deepEqual(body.state.adjustableControls, [
+        { label: 'Display brightness', bounds: { left: 0, top: 0.5, right: 1, bottom: 0.75 } },
+      ]);
+      assert.match(
+        body.questions.operation.criteria.TAP_POINT,
+        /tap there sets the value directly/,
+      );
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP_POINT'),
+            target_point: { type: 'box', box: { left: 0.05, top: 0.55, right: 0.1, bottom: 0.6 } },
+          },
+        }),
+      );
+    },
+  });
+  const decision = await policy.decide({ goal: 'Dim the screen', observation, image: 'AAAA' });
+  assert.equal(decision.operation, 'TAP_POINT');
+  assert.equal(decision.status, 'action');
 });

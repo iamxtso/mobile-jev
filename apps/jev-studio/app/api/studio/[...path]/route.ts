@@ -15,34 +15,19 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     const { path } = await context.params;
     if (request.method === 'GET' && path.join('/') === 'device') {
       const config = deviceConfig();
-      if (config.backend === 'adb') {
-        const client = createAgentDevice(config);
-        const d = await client.assertReady();
-        return json({
-          kind: 'adb',
-          id: d.id,
-          name: d.name,
-          state: d.state,
-          snapshotUrl: '/api/studio/device/snapshot',
-          control: 'disabled',
-        });
-      }
-      const client = createAgentDevice({ backend: 'mobilerun' });
-      const d = await client.api(client.path());
+      const client = createAgentDevice(config);
+      const d = await client.assertReady();
       return json({
-        kind: 'mobilerun',
+        kind: 'adb',
         id: d.id,
         name: d.name,
         state: d.state,
-        streamUrl: d.streamUrl || null,
-        streamToken: d.streamToken || null,
-        environment: new URL(client.baseUrl).hostname.includes('staging') ? 'Staging' : 'Cloud',
-        control: 'remote',
+        snapshotUrl: '/api/studio/device/snapshot',
+        control: 'disabled',
       });
     }
     if (request.method === 'GET' && path.join('/') === 'device/snapshot') {
       const config = deviceConfig();
-      if (config.backend !== 'adb') throw new StudioError('Not found.', 404);
       const client = createAgentDevice(config);
       let bytes: Awaited<ReturnType<typeof client.screenshot>>;
       try {
@@ -62,13 +47,7 @@ async function handle(request: Request, context: { params: Promise<{ path: strin
     if (request.method === 'GET' && path.join('/') === 'runs') return json(studio.list());
     if (request.method === 'POST' && path.join('/') === 'runs/clear') return json(studio.clear());
     if (request.method === 'POST' && path.join('/') === 'runs') {
-      const config = deviceConfig();
-      if (
-        config.backend === 'mobilerun' &&
-        !process.env.MOBILERUN_API_KEY &&
-        !process.env.MOBILERUN_CLOUD_API_KEY
-      )
-        throw new StudioError('Mobilerun credentials are missing on the server.', 503);
+      deviceConfig();
       if (!process.env.TYPESAFE_API_KEY)
         throw new StudioError('TypeSafe credentials are missing on the server.', 503);
       const text = await request.text();

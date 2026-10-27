@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { prepareInputVerification, inputMatches, confirmInput } from './input-verification.mjs';
-import { MobilerunDevice } from './device.mjs';
 import { runAgent } from './agent.mjs';
 
 const action = { type: 'type', text: 'Berlin', clear: true };
@@ -24,43 +23,6 @@ function screen(text = '') {
     ],
   };
 }
-
-test('fast keyboard mode requires an exactly verifiable replacement; other inputs retain committed mode', async () => {
-  for (const [mode, change, input, expected] of [
-    ['accepted', () => {}, action, 'accepted'],
-    ['committed', () => {}, action, 'committed'],
-    ['accepted', () => {}, { ...action, clear: false }, 'committed'],
-    [
-      'accepted',
-      (o) => {
-        o.elements[0].password = true;
-      },
-      action,
-      'committed',
-    ],
-    [
-      'accepted',
-      (o) => {
-        o.phone.inputElementId = null;
-      },
-      action,
-      'committed',
-    ],
-  ]) {
-    const current = screen();
-    change(current);
-    const device = new MobilerunDevice({ deviceId: 'phone', textCompletionMode: mode });
-    device.assertReady = async () => {};
-    device.observe = async () => current;
-    let body;
-    device.api = async (_path, _method, value) => {
-      body = value;
-    };
-    const receipt = await device.act(input);
-    assert.equal(body.completionMode, expected);
-    assert.equal(Boolean(receipt?.inputVerification), expected === 'accepted');
-  }
-});
 
 test('readback requires exact text on the same device, app and identified field', () => {
   const verification = prepareInputVerification(screen(), action);

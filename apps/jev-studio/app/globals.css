@@ -450,6 +450,9 @@ textarea:focus {
 .task-status.succeeded {
   color: #607491;
 }
+.task-status.exhausted {
+  color: #e0a76a;
+}
 .task-status.failed,
 .task-status.blocked {
   color: #547ebd;
@@ -655,6 +658,20 @@ textarea:focus {
   gap: 3px;
   font-size: 8px;
   color: #8393ac;
+}
+.action-meta .signal {
+  padding: 1px 5px;
+  border: 1px solid #2a3a52;
+  border-radius: 999px;
+  color: #9fb0c8;
+}
+.action-meta .signal.ok {
+  border-color: #2f5c45;
+  color: #6fd39b;
+}
+.action-meta .signal.warn {
+  border-color: #6a4a2a;
+  color: #e0a76a;
 }
 .thinking-row {
   display: flex;
@@ -1358,10 +1375,10 @@ textarea:focus {
     padding: 12px 52px;
     container-type: size;
     display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  /* Without this the implicit auto column grows to the frame's max-content width, so
+    grid-template-rows: minmax(0, 1fr);
+    /* Without this the implicit auto column grows to the frame's max-content width, so
      max-width: 100% on the frame resolves against the overflow instead of the stage. */
-  grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     justify-items: center;
     gap: 0;
   }

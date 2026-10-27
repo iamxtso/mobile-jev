@@ -3,6 +3,37 @@ import { StaleObservationError } from './device.mjs';
 import { describeAction } from './actions.mjs';
 import { confirmInput } from './input-verification.mjs';
 export { candidatesFor } from './actions.mjs';
+
+// Two taps a few pixels apart are one retry; a third tap around the same point, with nothing changing
+// on screen, is a stall. Exact action equality misses this: 24 px was enough to look like progress.
+const NEARBY_TAP_PX = 48;
+const MAX_NEARBY_MISSES = 3;
+// The same operation that changes nothing, repeated, is a loop. The exact-repeat guard misses it
+// whenever the screen twitches on its own (a clock, a battery icon), so it is counted separately.
+const MAX_STALLED_REPEAT = 3;
+// Repeating one of these three times in a row is always a loop: they have no incremental progress to
+// make. Scrolling and typing are excluded, where the same action legitimately repeats.
+const REPEAT_IS_A_LOOP = new Set([
+  'EXPAND_NOTIFICATIONS',
+  'EXPAND_QUICK_SETTINGS',
+  'COLLAPSE_NOTIFICATIONS',
+  'OPEN_APP',
+  'HOME',
+  'BACK',
+]);
+
+/** Where a tap would land, from the observation it was decided on. */
+function tapPoint(action, observation) {
+  if (action?.type === 'tap') return { x: action.x, y: action.y };
+  if (action?.type !== 'tap-element') return null;
+  const node = observation.elements.find((element) => element.id === action.elementId);
+  return node
+    ? {
+        x: (node.bounds.left + node.bounds.right) / 2,
+        y: (node.bounds.top + node.bounds.bottom) / 2,
+      }
+    : null;
+}
 export { TypeSafePolicy } from './policy.mjs';
 
 // A policy selects one operation and (where needed) its target in one model request.
@@ -12,7 +43,7 @@ export async function runAgent({
   goal,
   texts = [],
   execute = false,
-  maxSteps = 10,
+  maxSteps = 20,
   settleMs = 0,
   settleTimeoutMs = 400,
   waitTimeoutMs = 15_000,
@@ -34,6 +65,7 @@ export async function runAgent({
     modelMs: 0,
     actionMs: 0,
     observationMs: 0,
+    snapshotMs: 0,
     waitMs: 0,
     staleRetries: 0,
     modelCalls: 0,
@@ -46,6 +78,20 @@ export async function runAgent({
       return await device.observe();
     } finally {
       timings.observationMs += performance.now() - start;
+    }
+  };
+  // A screenshot lets the policy point at controls the accessibility tree does not expose. Devices
+  // without one (and test doubles) keep the text-only request.
+  const snapshot = async () => {
+    if (typeof device.screenshot !== 'function') return undefined;
+    // The accessibility helper returns its image with the tree it read, from the same instant.
+    if (typeof device.snapshotImage === 'string' && device.snapshotImage)
+      return device.snapshotImage;
+    const start = performance.now();
+    try {
+      return (await device.screenshot()).toString('base64');
+    } finally {
+      timings.snapshotMs += performance.now() - start;
     }
   };
   const wait = async (ms) => {
@@ -71,6 +117,10 @@ export async function runAgent({
   });
   let consecutiveWaits = 0,
     consecutiveStale = 0;
+  let nearbyMisses = 0,
+    lastMissedTap = null;
+  let stalledOperation = null,
+    stalledCount = 0;
   let waitingSince;
   // Stale decisions never dispatch input, but still consume a separate model-call budget.
   for (let attempt = 0; attempt < maxSteps * 2 + 4; attempt++) {
@@ -81,6 +131,7 @@ export async function runAgent({
       history,
       texts,
       apps: installedApps,
+      image: await snapshot(),
     });
     timings.modelMs += performance.now() - modelStart;
     timings.modelCalls++;
@@ -183,8 +234,39 @@ export async function runAgent({
     }
     entry.after = after.fingerprint;
     entry.screenChanged = observation.fingerprint !== after.fingerprint;
+    const name = decision.operation || decision.action.type;
+    if (REPEAT_IS_A_LOOP.has(name)) {
+      stalledCount = name === stalledOperation ? stalledCount + 1 : 1;
+      stalledOperation = name;
+    } else {
+      stalledOperation = null;
+      stalledCount = 0;
+    }
+    const touched = tapPoint(decision.action, observation);
+    if (!touched || entry.screenChanged) {
+      nearbyMisses = 0;
+      lastMissedTap = null;
+    } else {
+      nearbyMisses =
+        lastMissedTap &&
+        Math.abs(lastMissedTap.x - touched.x) <= NEARBY_TAP_PX &&
+        Math.abs(lastMissedTap.y - touched.y) <= NEARBY_TAP_PX
+          ? nearbyMisses + 1
+          : 1;
+      lastMissedTap = touched;
+    }
     await onObservation({ step, observation: after, screenChanged: entry.screenChanged });
     observation = after;
+    if (nearbyMisses >= MAX_NEARBY_MISSES)
+      return finish('stuck', {
+        ...decision,
+        reason: `${MAX_NEARBY_MISSES} taps around (${Math.round(lastMissedTap.x)}, ${Math.round(lastMissedTap.y)}) changed nothing on screen.`,
+      });
+    if (stalledCount >= MAX_STALLED_REPEAT)
+      return finish('stuck', {
+        ...decision,
+        reason: `${stalledCount} × ${stalledOperation} in a row changed nothing on screen.`,
+      });
   }
   return finish('decision_limit');
 }

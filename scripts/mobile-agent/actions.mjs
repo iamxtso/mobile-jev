@@ -65,6 +65,7 @@ export function candidatesFor(observation, texts = []) {
 
 export function describeAction(action, observation) {
   if (action.type === 'open-app') return `Open ${action.appLabel || action.packageName}`;
+  if (action.type === 'tap') return `Tap the screen at (${action.x}, ${action.y}).`;
   if (action.type === 'tap-element') {
     const target = observation.elements.find((e) => e.id === action.elementId);
     if (target?.editable)
@@ -75,6 +76,25 @@ export function describeAction(action, observation) {
       .filter(Boolean);
     return `Tap ${[...new Set(labels)].join(' / ') || action.elementId}.`;
   }
+  if (action.type === 'drag' && action.from && action.to)
+    return `Drag from (${action.from.x}, ${action.from.y}) to (${action.to.x}, ${action.to.y}).`;
+  if (action.type === 'long-press' || action.type === 'double-tap' || action.type === 'drag') {
+    const target = observation.elements.find((e) => e.id === action.elementId);
+    const labels = observation.elements
+      .filter((e) => e.id === action.elementId || e.id.startsWith(action.elementId + '.'))
+      .flatMap((e) => [e.text, e.label])
+      .filter(Boolean);
+    const name = [...new Set(labels)].join(' / ') || target?.resourceId || action.elementId;
+    if (action.type === 'long-press') return `Press and hold ${name}.`;
+    if (action.type === 'double-tap') return `Double tap ${name}.`;
+    return `Drag ${name} ${action.direction.toLowerCase()}.`;
+  }
+  if (action.type === 'statusbar')
+    return {
+      notifications: 'Pull down the notification list.',
+      settings: 'Open the quick settings panel.',
+      collapse: 'Close the notification shade.',
+    }[action.view];
   if (action.type === 'swipe') {
     const direction =
       action.startY > action.endY
