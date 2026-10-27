@@ -279,6 +279,21 @@ async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, i
   await dispatch(resolved);
   return receipt ? { inputVerification: receipt } : undefined;
 }
+// A list row is often a clickable container whose text lives in a child TextView, so the container
+// itself looks anonymous. Folding the children's text in lets the row keep a name without the model
+// having to guess which container is which.
+function descendantText(node, depth = 0) {
+  if (depth > 4 || !Array.isArray(node.children)) return '';
+  for (const child of node.children) {
+    if (!child || child.isPassword === true) continue;
+    const own = (child.text || child.contentDescription || '').trim();
+    if (own) return own;
+    const deeper = descendantText(child, depth + 1);
+    if (deeper) return deeper;
+  }
+  return '';
+}
+
 export function summarizeState(raw, deviceId) {
   const screen = raw?.device_context?.screen_bounds;
   if (
@@ -325,11 +340,13 @@ export function summarizeState(raw, deviceId) {
           'android.widget.MultiAutoCompleteTextView',
         ].includes(node.className);
       if (text || label || node.isClickable || editable || node.isScrollable) {
+        const nested = text || label ? '' : descendantText(node);
         elements.push({
           id: path,
           className: node.className || '',
           text,
           label,
+          ...(nested ? { nested } : {}),
           resourceId: node.resourceId || '',
           hint: node.hint || '',
           bounds,

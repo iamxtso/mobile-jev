@@ -1,7 +1,13 @@
 export function candidatesFor(observation, texts = []) {
   const actions = {};
   for (const node of observation.elements) {
-    if (node.enabled && (node.clickable || node.editable)) {
+    // An element with no text and no description is an icon: the model cannot tell one ui.2.0 from
+    // another, so offering it as a choice invites a guess. TAP_POINT reaches it by geometry instead,
+    // which is what a person does with an unlabelled icon.
+    const named = Boolean(
+      (node.text || '').trim() || (node.description || '').trim() || (node.nested || '').trim(),
+    );
+    if (node.enabled && (node.clickable || node.editable) && named) {
       actions[`tap_${node.id}`] = { type: 'tap-element', elementId: node.id };
     }
   }

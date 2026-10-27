@@ -363,7 +363,7 @@ export class TypeSafePolicy {
     // one, the request is unchanged: text-only operation choices against the observed elements.
     if (image) {
       space.questions.operation.criteria.TAP_POINT =
-        'Tap a point on screen at coordinates you pick from `screen`. Use it when the control you need is not in the element list, or the list is empty: an icon-only button, an image, a map, a chart, a custom-drawn surface. When the control is in the element list, use TAP instead. On a slider listed in `adjustableControls`, tap the point on its track that the goal asks for: a tap there sets the value directly, so no drag is needed and one tap is enough.';
+        'Tap a point on screen at coordinates you pick from `screen`. Use it for anything the element list cannot name: an icon with no text, a button that is only a glyph, an image, a map, a chart, a custom-drawn surface. Elements without a name are deliberately not offered as TAP choices, so an unlabelled icon is reached this way. When the control does have a name in the element list, use TAP instead. On a slider listed in `adjustableControls`, tap the point on its track that the goal asks for: a tap there sets the value directly, so no drag is needed and one tap is enough.';
       // A drag between two points reaches what the element list cannot describe: a slider thumb, a
       // handle, anything drawn rather than laid out.
       space.questions.operation.criteria.DRAG_POINT =
