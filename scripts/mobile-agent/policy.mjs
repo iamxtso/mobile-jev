@@ -207,6 +207,11 @@ export function buildQuestions(observation, texts = [], apps = []) {
       'No offered operation can advance even one step toward the goal. Do not choose this merely because a field must first be opened or focused.',
   });
   const questions = { operation: { type: 'choice', instructions: RULES, criteria: operations } };
+  questions.stuck = {
+    type: 'noul',
+    instructions:
+      'The recent actions are not making progress toward the goal: they repeat, they loop, or the screen does not change in the asked-for direction.',
+  };
   const forced = {};
   // A choice needs at least two options, so a question with one option is not worth sending: the
   // answer is that option. Asking it makes the whole request fail as a malformed question.
@@ -299,11 +304,14 @@ export class TypeSafePolicy {
     model = process.env.TYPESAFE_MODEL,
     baseUrl = process.env.TYPESAFE_BASE_URL,
     threshold = 0,
+    commitThreshold = MIN_CONFIDENCE_COMMITTING,
     request = pooledRequest,
   } = {}) {
     if (!model) throw new Error('TYPESAFE_MODEL is required.');
     if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)
       throw new Error('Confidence threshold must be between 0 and 1.');
+    if (!Number.isFinite(commitThreshold) || commitThreshold < 0 || commitThreshold > 1)
+      throw new Error('Commit threshold must be between 0 and 1.');
     this.apiKey = apiKey;
     this.model = model;
     // TYPESAFE_BASE_URL points the policy at another System One deployment, such as a self-hosted
@@ -312,6 +320,7 @@ export class TypeSafePolicy {
       ? `${baseUrl.replace(/\/+$/, '')}/systemone`
       : 'https://api.typesafe.ai/v1/systemone';
     this.threshold = threshold;
+    this.commitThreshold = commitThreshold;
     this.request = request;
   }
 
@@ -565,7 +574,7 @@ export class TypeSafePolicy {
       status === 'action' &&
       image &&
       COMMITTING.has(operation) &&
-      operationAnswer.confidence < MIN_CONFIDENCE_COMMITTING
+      operationAnswer.confidence < this.commitThreshold
     ) {
       const check = await this.commits({ goal, image, next: label });
       commitProbability = check?.probability;
@@ -579,6 +588,7 @@ export class TypeSafePolicy {
       target,
       choice: selected?.id || operation,
       confidence: operationAnswer.confidence,
+      stuck: response.answers?.stuck?.noul,
       targetConfidence: targetAnswer?.confidence,
       operationProbabilities: operationAnswer.probabilities,
       targetProbabilities: targetAnswer?.probabilities,

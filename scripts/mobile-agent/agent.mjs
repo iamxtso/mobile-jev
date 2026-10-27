@@ -11,6 +11,10 @@ const MAX_NEARBY_MISSES = 3;
 // The same operation that changes nothing, repeated, is a loop. The exact-repeat guard misses it
 // whenever the screen twitches on its own (a clock, a battery icon), so it is counted separately.
 const MAX_STALLED_REPEAT = 3;
+// Jev judged the recent actions are going nowhere. The first steps legitimately show no progress,
+// so the watcher stays quiet until the run has a few actions to judge.
+const MIN_STUCK_PROBABILITY = 0.85;
+const MIN_STUCK_STEP = 2;
 // Repeating one of these three times in a row is always a loop: they have no incremental progress to
 // make. Scrolling and typing are excluded, where the same action legitimately repeats.
 const REPEAT_IS_A_LOOP = new Set([
@@ -139,6 +143,15 @@ export async function runAgent({
     await onStep({ step, attempt, ...decision });
     if (decision.status !== 'action') return finish(decision.status, decision);
     if (!execute) return finish('preview', decision);
+    if (
+      Number.isFinite(decision.stuck) &&
+      decision.stuck > MIN_STUCK_PROBABILITY &&
+      step > MIN_STUCK_STEP
+    )
+      return finish('stuck', {
+        ...decision,
+        reason: `Jev judged the recent actions are not making progress (${Math.round(decision.stuck * 100)}%).`,
+      });
     if (step >= maxSteps) return finish('step_limit', decision);
     const isWait = decision.action.type === 'wait';
     const label =

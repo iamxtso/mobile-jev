@@ -45,6 +45,7 @@ test('operation and compatible targets are asked in one call; only selected targ
       calls++;
       assert.deepEqual(Object.keys(body.questions), [
         'operation',
+        'stuck',
         'tap_target',
         'gesture_target',
         'drag_direction',
@@ -175,7 +176,7 @@ test('unavailable operations are omitted', () => {
   observation.phone.isEditable = false;
   observation.elements = [];
   const { questions } = buildQuestions(observation, ['text']);
-  assert.deepEqual(Object.keys(questions), ['operation']);
+  assert.deepEqual(Object.keys(questions), ['operation', 'stuck']);
   assert.equal(questions.operation.criteria.TAP, undefined);
   assert.equal(questions.operation.criteria.TYPE_TEXT, undefined);
   assert.equal(questions.operation.criteria.SCROLL_DOWN, undefined);
@@ -381,6 +382,97 @@ test('stale decisions re-observe and re-predict; uncertain mutations never retry
       assert.equal(decisions, 1);
     }
   }
+});
+
+// A fingerprint that changes on every read keeps the exact-repeat and nearby-tap guards out of the
+// way, so a stop can only come from the stuck answer.
+const steppingDevice = () => {
+  let reads = 0,
+    acts = 0;
+  const device = {
+    assertReady: async () => {},
+    observe: async () => ({ ...observe(), fingerprint: String(reads++) }),
+    act: async () => {
+      acts++;
+    },
+  };
+  return { device, acts: () => acts };
+};
+
+test('stuck above 0.85 on step 3 stops before dispatching input', async () => {
+  const { device, acts } = steppingDevice();
+  const policy = {
+    decide: async ({ history }) => ({
+      status: 'action',
+      action: { type: 'tap', x: history.length, y: 10 },
+      ...(history.length >= 3 ? { stuck: 0.92 } : {}),
+    }),
+  };
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'Reach the setting',
+    execute: true,
+    settleTimeoutMs: 0,
+  });
+  assert.equal(result.status, 'stuck');
+  assert.equal(result.steps, 3);
+  assert.equal(acts(), 3);
+  assert.match(result.decision.reason, /not making progress \(92%\)/);
+});
+
+test('stuck below 0.85 does not stop the run', async () => {
+  const { device, acts } = steppingDevice();
+  const policy = {
+    decide: async ({ history }) =>
+      history.length >= 5
+        ? { status: 'done' }
+        : { status: 'action', stuck: 0.6, action: { type: 'tap', x: history.length, y: 10 } },
+  };
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'Reach the setting',
+    execute: true,
+    settleTimeoutMs: 0,
+  });
+  assert.equal(result.status, 'done');
+  assert.equal(result.steps, 5);
+  assert.equal(acts(), 5);
+});
+
+test('a missing stuck answer stays undefined and does not stop the run', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) =>
+      Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP'),
+            tap_target: answer(body.questions.tap_target.criteria),
+          },
+        }),
+      ),
+  });
+  const decision = await policy.decide({ goal: 'Open About phone', observation: observe() });
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.stuck, undefined);
+
+  const { device, acts } = steppingDevice();
+  const stuckless = {
+    decide: async ({ history }) =>
+      history.length >= 5
+        ? { status: 'done' }
+        : { status: 'action', action: { type: 'tap', x: history.length, y: 10 } },
+  };
+  const result = await runAgent({
+    device,
+    policy: stuckless,
+    goal: 'Reach the setting',
+    execute: true,
+    settleTimeoutMs: 0,
+  });
+  assert.equal(result.status, 'done');
+  assert.equal(acts(), 5);
 });
 
 test('a screenshot adds one box question; the accessibility tree is used when it has the control', async () => {
@@ -601,6 +693,45 @@ test('a confident step is not asked about committing at all', async () => {
   });
   assert.equal(asked, 0);
   assert.equal(decision.status, 'action');
+});
+
+test('commitThreshold 0 disables the commit question; the default still asks it', async () => {
+  for (const [commitThreshold, expectedAsks, expectedStatus] of [
+    [undefined, 1, 'uncertain'],
+    [0, 0, 'action'],
+  ]) {
+    let commitAsks = 0;
+    const policy = new TypeSafePolicy({
+      ...(commitThreshold === undefined ? {} : { commitThreshold }),
+      request: async ({ body }) => {
+        if (body.questions.commit) {
+          commitAsks++;
+          return Buffer.from(JSON.stringify({ answers: { commit: { type: 'noul', noul: 0.95 } } }));
+        }
+        const choice = 'TAP';
+        return Buffer.from(
+          JSON.stringify({
+            answers: {
+              operation: {
+                type: 'choice',
+                choice,
+                confidence: 0.6,
+                probabilities: spread(body.questions.operation.criteria, choice, 0.6),
+              },
+              tap_target: answer(body.questions.tap_target.criteria),
+            },
+          }),
+        );
+      },
+    });
+    const decision = await policy.decide({
+      goal: 'Buy the ticket',
+      observation: observe(),
+      image: 'AAAA',
+    });
+    assert.equal(commitAsks, expectedAsks);
+    assert.equal(decision.status, expectedStatus);
+  }
 });
 
 test('a point drag carries both ends in screen pixels', async () => {
