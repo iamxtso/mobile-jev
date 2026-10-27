@@ -824,3 +824,112 @@ test('a slider is listed even though Android does not report it as clickable', a
   assert.equal(decision.operation, 'TAP_POINT');
   assert.equal(decision.status, 'action');
 });
+
+// Weights become the operation distribution, so the next-best choice of a stall is known exactly.
+const distribution = (criteria, weights) => {
+  const total = Object.values(weights).reduce((sum, n) => sum + n, 0);
+  return Object.fromEntries(Object.keys(criteria).map((key) => [key, (weights[key] ?? 0) / total]));
+};
+
+const weightedPolicy = (choice, weights, omit = []) =>
+  new TypeSafePolicy({
+    request: async ({ body }) => {
+      const probabilities = distribution(body.questions.operation.criteria, weights);
+      const answers = {
+        operation: { type: 'choice', choice, confidence: probabilities[choice], probabilities },
+      };
+      // Every offered target is answered, so only the recovery itself decides the outcome.
+      for (const [name, question] of Object.entries(body.questions))
+        if (name.endsWith('_target') && !omit.includes(name))
+          answers[name] = answer(question.criteria);
+      return Buffer.from(JSON.stringify({ answers }));
+    },
+  });
+
+test('avoid switches to the next-best operation and reports that option probability', async () => {
+  const policy = weightedPolicy('TAP', { TAP: 0.6, SCROLL_DOWN: 0.25, DONE: 0.1, WAIT: 0.05 });
+  const decision = await policy.decide({
+    goal: 'Find version',
+    observation: observe(),
+    avoid: new Set(['TAP']),
+  });
+  assert.equal(decision.operation, 'SCROLL_DOWN');
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.confidence, decision.operationProbabilities.SCROLL_DOWN);
+  assert.equal(decision.recovered, 'switched to SCROLL_DOWN after TAP stopped changing the screen');
+});
+
+test('avoid covering every actionable option keeps the operation status and no recovery', async () => {
+  const policy = weightedPolicy('TAP', { TAP: 0.6, SCROLL_DOWN: 0.4 });
+  const decision = await policy.decide({
+    goal: 'Open About phone',
+    observation: observe(),
+    avoid: new Set(['TAP', 'SCROLL_DOWN']),
+  });
+  assert.equal(decision.operation, 'TAP');
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.recovered, undefined);
+});
+
+test('a stall never recovers into a stop gate or a wait', async () => {
+  const policy = weightedPolicy('TAP', { TAP: 0.5, DONE: 0.3, BLOCKED: 0.1, WAIT: 0.1 });
+  const decision = await policy.decide({
+    goal: 'Open About phone',
+    observation: observe(),
+    avoid: new Set(['TAP']),
+  });
+  assert.equal(decision.operation, 'TAP');
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.recovered, undefined);
+});
+
+test('a recovery skips an operation whose target was never answered', async () => {
+  const policy = weightedPolicy('TAP', { TAP: 0.5, LONG_PRESS: 0.5 }, ['gesture_target']);
+  const decision = await policy.decide({
+    goal: 'Open About phone',
+    observation: observe(),
+    avoid: new Set(['TAP']),
+  });
+  // LONG_PRESS is the only other option and its gesture_target answer is missing, so staying with
+  // TAP is honest: a recovery must not reach for a target the model never chose.
+  assert.equal(decision.operation, 'TAP');
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.recovered, undefined);
+});
+
+// A screen that never changes: every tap lands near the last one, so only the stall guards can act.
+const frozenDevice = () => {
+  let acts = 0;
+  const device = {
+    assertReady: async () => {},
+    observe: async () => observe(),
+    act: async () => {
+      acts++;
+    },
+  };
+  return { device, acts: () => acts };
+};
+
+test('a tap that never changes the screen recovers three times, then reports the stall', async () => {
+  const { device, acts } = frozenDevice();
+  const operations = ['TAP', 'SCROLL_DOWN', 'ENTER', 'TYPE_TEXT'];
+  const policy = {
+    decide: async ({ history, avoid }) => ({
+      status: 'action',
+      operation: operations.find((operation) => !avoid.has(operation)),
+      action: { type: 'tap', x: 100 + history.length * 2, y: 100 },
+    }),
+  };
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'Reach the setting',
+    execute: true,
+    settleTimeoutMs: 0,
+  });
+  // Three misses per stall, three recoveries, then the fourth stall stops the run.
+  assert.equal(result.status, 'stuck');
+  assert.equal(acts(), 12);
+  assert.equal(result.steps, 12);
+  assert.match(result.decision.reason, /^3 taps around \(122, 100\) changed nothing on screen\.$/);
+});

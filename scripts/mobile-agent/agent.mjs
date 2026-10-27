@@ -11,6 +11,8 @@ const MAX_NEARBY_MISSES = 3;
 // The same operation that changes nothing, repeated, is a loop. The exact-repeat guard misses it
 // whenever the screen twitches on its own (a clock, a battery icon), so it is counted separately.
 const MAX_STALLED_REPEAT = 3;
+// A stall is usually a wrong operation, not a dead end: try the next-best one a few times first.
+const MAX_RECOVERIES = 3;
 // Jev judged the recent actions are going nowhere. The first steps legitimately show no progress,
 // so the watcher stays quiet until the run has a few actions to judge.
 const MIN_STUCK_PROBABILITY = 0.85;
@@ -123,6 +125,8 @@ export async function runAgent({
     consecutiveStale = 0;
   let nearbyMisses = 0,
     lastMissedTap = null;
+  const avoid = new Set();
+  let recoveries = 0;
   let stalledOperation = null,
     stalledCount = 0;
   let waitingSince;
@@ -136,6 +140,7 @@ export async function runAgent({
       texts,
       apps: installedApps,
       image: await snapshot(),
+      avoid,
     });
     timings.modelMs += performance.now() - modelStart;
     timings.modelCalls++;
@@ -270,16 +275,32 @@ export async function runAgent({
     }
     await onObservation({ step, observation: after, screenChanged: entry.screenChanged });
     observation = after;
-    if (nearbyMisses >= MAX_NEARBY_MISSES)
+    if (nearbyMisses >= MAX_NEARBY_MISSES) {
+      if (recoveries < MAX_RECOVERIES && decision.operation) {
+        avoid.add(decision.operation);
+        recoveries++;
+        nearbyMisses = 0;
+        lastMissedTap = null;
+        continue;
+      }
       return finish('stuck', {
         ...decision,
         reason: `${MAX_NEARBY_MISSES} taps around (${Math.round(lastMissedTap.x)}, ${Math.round(lastMissedTap.y)}) changed nothing on screen.`,
       });
-    if (stalledCount >= MAX_STALLED_REPEAT)
+    }
+    if (stalledCount >= MAX_STALLED_REPEAT) {
+      if (recoveries < MAX_RECOVERIES && decision.operation) {
+        avoid.add(decision.operation);
+        recoveries++;
+        stalledCount = 0;
+        stalledOperation = null;
+        continue;
+      }
       return finish('stuck', {
         ...decision,
         reason: `${stalledCount} × ${stalledOperation} in a row changed nothing on screen.`,
       });
+    }
   }
   return finish('decision_limit');
 }

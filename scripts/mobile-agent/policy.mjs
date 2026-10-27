@@ -16,6 +16,18 @@ const MIN_GOAL_VISIBLE = 0.5;
 const COMMITTING = new Set(['TAP', 'TAP_POINT', 'TYPE_TEXT', 'ENTER']);
 const MIN_CONFIDENCE_COMMITTING = 0.75;
 const MIN_COMMIT_PROBABILITY = 0.5;
+// A stop gate and a wait are not retries, so a stall never recovers into them.
+const NON_RECOVERABLE = new Set(['DONE', 'BLOCKED', 'WAIT']);
+
+/** The question that selects an operation's target, or null for a global operation. */
+function targetQuestionFor(operation) {
+  if (operation === 'OPEN_APP') return 'app_target';
+  if (operation === 'TAP') return 'tap_target';
+  if (['LONG_PRESS', 'DOUBLE_TAP', 'DRAG'].includes(operation)) return 'gesture_target';
+  if (operation.startsWith('SCROLL_')) return 'scroll_target';
+  if (operation === 'TYPE_TEXT') return 'text_value';
+  return null;
+}
 
 export function validateChoice(answer, criteria) {
   const ids = Object.keys(criteria);
@@ -351,7 +363,15 @@ export class TypeSafePolicy {
     return { probability: response?.answers?.commit?.noul, usage: response?.usage };
   }
 
-  async decide({ goal, observation, history = [], texts = [], apps = [], image }) {
+  async decide({
+    goal,
+    observation,
+    history = [],
+    texts = [],
+    apps = [],
+    image,
+    avoid = new Set(),
+  }) {
     if (typeof goal !== 'string' || !goal.trim()) throw new Error('A nonempty goal is required.');
     const textOptions = textCandidates(goal, texts);
     // Exact app-name lookup narrows discovery; Jev still selects operation and target.
@@ -456,7 +476,24 @@ export class TypeSafePolicy {
       response?.answers?.operation,
       space.questions.operation.criteria,
     );
-    const operation = operationAnswer.choice;
+    let operation = operationAnswer.choice;
+    let recovered;
+    if (avoid.has(operation)) {
+      const ranked = Object.entries(operationAnswer.probabilities)
+        .filter(([name, p]) => p > 0 && !avoid.has(name) && !NON_RECOVERABLE.has(name))
+        .filter(([name]) => {
+          // The original operation did not need this target, so the model may not have answered
+          // for it. Recover only into an operation whose target is already in hand.
+          const head = targetQuestionFor(name);
+          if (!head) return name !== 'TAP_POINT' && name !== 'DRAG_POINT';
+          return space.forced[head] !== undefined || Boolean(response.answers?.[head]);
+        })
+        .sort((a, b) => b[1] - a[1]);
+      if (ranked.length) {
+        operation = ranked[0][0];
+        recovered = `switched to ${operation} after ${[...avoid].join(', ')} stopped changing the screen`;
+      }
+    }
     const pick = (operation, target) =>
       operation === 'OPEN_APP'
         ? space.app[target]
@@ -465,20 +502,9 @@ export class TypeSafePolicy {
           : operation === 'TYPE_TEXT'
             ? space.text[target]
             : space.scroll[target][operation];
-    let target, targetAnswer, selected;
+    let target, targetAnswer, selected, point, drag;
     // Only the selected branch is validated and consumed. Unused speculative answers cannot execute.
-    const head =
-      operation === 'OPEN_APP'
-        ? 'app_target'
-        : operation === 'TAP'
-          ? 'tap_target'
-          : ['LONG_PRESS', 'DOUBLE_TAP', 'DRAG'].includes(operation)
-            ? 'gesture_target'
-            : operation.startsWith('SCROLL_')
-              ? 'scroll_target'
-              : operation === 'TYPE_TEXT'
-                ? 'text_value'
-                : null;
+    const head = targetQuestionFor(operation);
     if (head && space.forced[head] !== undefined) {
       // One offered target: the answer is not in doubt, and the API rejects a one-option choice.
       target = space.forced[head];
@@ -489,15 +515,13 @@ export class TypeSafePolicy {
       target = targetAnswer.choice;
       selected = pick(operation, target);
     } else selected = space.controls[operation];
-    let point;
     if (operation === 'TAP_POINT') {
       point = tapFromBox(validateBox(response.answers.target_point), observation);
       selected = { id: `tap_point_${point.x}_${point.y}`, action: point.action };
     }
-    let drag;
     if (operation === 'DRAG_POINT') {
-      // Both ends are raw coordinates: a slider thumb has no element to snap to, and snapping would
-      // move the finger to the middle of the track instead of the thumb.
+      // Both ends are raw coordinates: a slider thumb has no element to snap to, and snapping
+      // would move the finger to the middle of the track instead of the thumb.
       const from = pointCentre(validateBox(response.answers.target_point), observation);
       const to = pointCentre(validateBox(response.answers.drag_to), observation);
       drag = { from, to };
@@ -587,7 +611,9 @@ export class TypeSafePolicy {
       operation,
       target,
       choice: selected?.id || operation,
-      confidence: operationAnswer.confidence,
+      // A recovered operation was the second choice, so its own probability is the honest one.
+      confidence: recovered ? operationAnswer.probabilities[operation] : operationAnswer.confidence,
+      ...(recovered ? { recovered } : {}),
       stuck: response.answers?.stuck?.noul,
       targetConfidence: targetAnswer?.confidence,
       operationProbabilities: operationAnswer.probabilities,

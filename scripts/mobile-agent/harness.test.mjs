@@ -240,10 +240,12 @@ test('the same operation that cannot make progress three times stops the run', a
     observation.fingerprint = `screen-${screens++}`;
     return observation;
   };
+  // Each stall switches operation, so the stop can only come once the recovery budget is spent.
+  const loop = ['EXPAND_NOTIFICATIONS', 'EXPAND_QUICK_SETTINGS', 'COLLAPSE_NOTIFICATIONS', 'HOME'];
   const policy = {
-    decide: async () => ({
+    decide: async ({ avoid }) => ({
       status: 'action',
-      operation: 'EXPAND_NOTIFICATIONS',
+      operation: loop.find((operation) => !avoid.has(operation)),
       action: { type: 'statusbar', expand: true },
     }),
   };
@@ -252,11 +254,11 @@ test('the same operation that cannot make progress three times stops the run', a
     policy,
     goal: 'Read the notifications',
     execute: true,
-    maxSteps: 8,
+    maxSteps: 20,
     settleMs: 0,
     settleTimeoutMs: 0,
   });
   assert.equal(result.status, 'stuck');
-  assert.match(result.decision.reason, /3 × EXPAND_NOTIFICATIONS/);
-  assert.equal(calls.length, 3);
+  assert.match(result.decision.reason, /3 × HOME/);
+  assert.equal(calls.length, 12);
 });
