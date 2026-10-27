@@ -53,6 +53,29 @@ test('summarizes UI without hidden nodes or password values; fingerprint exclude
   assert.throws(() => summarizeState({}, 'phone'), /UI state/);
 });
 
+test('a row whose name lives in a child keeps its tap; a blank icon does not', () => {
+  const raw = state({ label: '' });
+  raw.a11y_tree.children = [
+    // A settings row: the clickable container is anonymous, its child carries the name.
+    {
+      isClickable: true,
+      boundsInScreen: { left: 0, top: 100, right: 720, bottom: 200 },
+      children: [{ text: '显示', boundsInScreen: { left: 40, top: 120, right: 300, bottom: 180 } }],
+    },
+    // An icon with nothing to name it: reachable by point, not by a guessed index.
+    {
+      isClickable: true,
+      boundsInScreen: { left: 600, top: 0, right: 680, bottom: 80 },
+      children: [],
+    },
+  ];
+  const observation = summarizeState(raw, 'phone');
+  const candidates = candidatesFor(observation);
+  assert.ok(candidates['tap_ui.0'], 'the named row keeps a tap candidate');
+  assert.equal(candidates['tap_ui.1'], undefined, 'the blank icon is not a tap candidate');
+  assert.equal(observation.elements[0].nested, '显示');
+});
+
 test('disabled elements and unfocused text entry are excluded from policy actions', () => {
   const raw = state();
   raw.a11y_tree.children[0].isEnabled = false;
