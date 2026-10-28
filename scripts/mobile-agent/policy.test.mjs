@@ -234,6 +234,24 @@ test('target guards allow unrelated text updates and movement but reject changed
   );
 });
 
+test('a point tap survives a screen that redraws elsewhere, but not a different control under it', () => {
+  const before = observe(),
+    after = structuredClone(before);
+  // The launcher's rotating tips card: the tree and the whole-screen fingerprint differ, the control
+  // under the point does not.
+  after.fingerprint = 'rotated-card';
+  after.elements.push(node('ui.9', 'Try saying: navigate home', { clickable: false }));
+  const at = { type: 'tap', x: 100, y: 100 }; // inside ui.0, bounds 0,0-200,200
+  assert.doesNotThrow(() => assertFresh(after, before, at));
+  after.elements[0].text = 'Purchase';
+  assert.throws(() => assertFresh(after, before, at), StaleObservationError);
+  // A point that draws nothing in either read is still actionable: a dock glyph has no node at all.
+  const blind = { type: 'tap', x: 500, y: 500 };
+  assert.doesNotThrow(() => assertFresh(after, before, blind));
+  after.elements.push(node('ui.10', 'Something arrived', { bounds: { left: 400, top: 400, right: 600, bottom: 600 } }));
+  assert.throws(() => assertFresh(after, before, blind), StaleObservationError);
+});
+
 test('Back tolerates live text counters but rejects changed navigation controls', () => {
   const before = observe(),
     after = structuredClone(before);

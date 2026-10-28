@@ -58,6 +58,17 @@ test('a quoted value is offered first, which is the only signal in text written 
   assert.deepEqual(textCandidates('打开设置', []).values[0], '打开设置');
 });
 
+test('a value asked for without quotes is offered up to the next clause mark', () => {
+  // The sheet writes `输入重庆、选择…`: no quotes, no spaces, so the span search can only offer the
+  // whole sentence and the model has nothing to type.
+  const goal = '在导航应用中点击搜索框，输入重庆、选择搜索目录中第一个地点的导航按钮，开始导航';
+  assert.equal(textCandidates(goal).values[0], '重庆');
+  // English keeps its spaces, so it stays with the span search.
+  assert.ok(
+    textCandidates('Search for San francisco and tap the first result').values.includes('San francisco'),
+  );
+});
+
 test('visible children survive invisible accessibility containers', () => {
   const data = raw();
   data.a11y_tree.isVisibleToUser = false;

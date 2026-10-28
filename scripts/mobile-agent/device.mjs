@@ -108,6 +108,23 @@ export function assertFresh(current, expected, action, maxAgeMs = 30_000) {
           .map((e) => [e.id, e.text, e.label]),
       });
     fresh = navigationMeaning(current) === navigationMeaning(expected);
+  } else if (action.type === 'tap') {
+    // A point tap is judged by the control it lands on, not by the whole tree. A car launcher redraws its
+    // voice-tips card every few seconds, so the fingerprint of an idle home screen differs between two
+    // reads and expired every point tap decided on one: three stale retries ended the run.
+    const atPoint = (state) =>
+      state.elements.find(
+        ({ bounds }) =>
+          bounds.left <= action.x &&
+          action.x < bounds.right &&
+          bounds.top <= action.y &&
+          action.y < bounds.bottom,
+      );
+    const drawn = (node) =>
+      node
+        ? JSON.stringify([node.bounds, node.text, node.label, node.resourceId, node.checked])
+        : null;
+    fresh = drawn(atPoint(current)) === drawn(atPoint(expected));
   } else if (action.type === 'swipe' && action.regionId) {
     const before = expected.elements.find((e) => e.id === action.regionId);
     const after = current.elements.find((e) => e.id === action.regionId);

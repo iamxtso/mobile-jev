@@ -22,7 +22,8 @@
     "format": "prettier . --check",
     "format:fix": "prettier . --write",
     "check": "pnpm test && pnpm lint && pnpm typecheck && pnpm format && pnpm build",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "testcases": "node scripts/testcases.mjs"
   },
   "devDependencies": {
     "@eslint/js": "9.39.4",
@@ -50,6 +51,7 @@
     "url": "https://github.com/droidrun/mobile-jev/issues"
   },
   "dependencies": {
-    "fast-xml-parser": "^5.11.1"
+    "fast-xml-parser": "^5.11.1",
+    "pinyin-pro": "^3.29.5"
   }
 }
