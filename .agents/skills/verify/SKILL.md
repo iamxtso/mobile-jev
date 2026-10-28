@@ -42,6 +42,10 @@ On this checkout the phone hangs off an adb server on another machine, reached t
   the `-L` forward. Without it every read falls back to the ten-second `uiautomator` dump.
 - `adb kill-server` kills the remote server through the tunnel and there is nothing local to restart it.
   Recover with `ssh devpod5 'adb start-server'`, then check `adb devices -l` before driving anything.
+- When the tunnel itself dies, a local adb server takes port 5037 and lists devices it cannot see
+  (`127.0.0.1:15555 offline` while the car is missing). That is the tunnel, not the car. Check `lsof -nP
+  -i :5037`: an `ssh` process means the tunnel is up, an `adb` process means it is gone. Rebuild it with
+  the same command, then re-create the helper forward (`adb -s 282999b1 forward tcp:27183 tcp:18888`).
   A helper whose accessibility service the ROM unbound shows up as `ping` failing on its port; the agent
   restarts it once per run (see `HelperClient.repair`).
 
