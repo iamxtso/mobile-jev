@@ -1,6 +1,5 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { RemoteControlHandle } from '@mobilerun/react';
 import { type Device, type Run, isActive, clock } from './studio-types';
 export function useStudio() {
   const [device, setDevice] = useState<Device | null>(null);
@@ -17,7 +16,6 @@ export function useStudio() {
   const [panel, setPanel] = useState<'activity' | 'history'>('activity');
   const [now, setNow] = useState(0);
   const [eventConnected, setEventConnected] = useState(true);
-  const controls = useRef<RemoteControlHandle>(null);
   const phoneStage = useRef<HTMLDivElement>(null);
   const goalInput = useRef<HTMLTextAreaElement>(null);
   const feed = useRef<HTMLDivElement>(null);
@@ -62,7 +60,7 @@ export function useStudio() {
   }, [loadDevice]);
 
   useEffect(() => {
-    if (!device || device.streamUrl || deviceError) return;
+    if (!device || device.snapshotUrl || deviceError) return;
     const timer = setTimeout(() => void loadDevice(), 3000);
     return () => clearTimeout(timer);
   }, [device, deviceError, loadDevice]);
@@ -176,7 +174,6 @@ export function useStudio() {
     setError,
     panel,
     setPanel,
-    controls,
     phoneStage,
     goalInput,
     feed,

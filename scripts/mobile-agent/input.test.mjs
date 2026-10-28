@@ -5,6 +5,7 @@ import { summarizeState, assertFresh } from './device.mjs';
 import { candidatesFor, describeAction } from './actions.mjs';
 import { TypeSafePolicy } from './policy.mjs';
 import { runAgent } from './agent.mjs';
+process.env.TYPESAFE_MODEL ??= 'test-model';
 
 const bounds = { left: 0, top: 0, right: 400, bottom: 100 };
 const input = {
@@ -37,6 +38,34 @@ test('goal spans include the requested city verbatim and explicit values overrid
   assert.equal(
     textCandidates(Array.from({ length: 100 }, (_, i) => `word${i}`).join(' ')).overflow,
     true,
+  );
+});
+
+test('a quoted value is offered first, which is the only signal in text written without spaces', () => {
+  // The goal has one whitespace-delimited word, so the span search can only offer the whole sentence.
+  const quoted = textCandidates('在导航搜索框输入“充电站”，然后点击搜索按钮。');
+  assert.equal(quoted.values[0], '充电站');
+  assert.ok(quoted.values.includes('在导航搜索框输入“充电站”，然后点击搜索按钮。'));
+  // Straight quotes, corner brackets and book-title marks are all quotation on this device.
+  for (const goal of [
+    '搜索 "星海广场" 并导航',
+    '在搜索框输入「大连北站」',
+    '把出发地设为《和平广场》',
+  ]) {
+    assert.equal(textCandidates(goal).values[0], goal.match(/["「《]([^"」》]+)["」》]/u)[1], goal);
+  }
+  // A goal with no quotation keeps the plain span search.
+  assert.deepEqual(textCandidates('打开设置', []).values[0], '打开设置');
+});
+
+test('a value asked for without quotes is offered up to the next clause mark', () => {
+  // The sheet writes `输入重庆、选择…`: no quotes, no spaces, so the span search can only offer the
+  // whole sentence and the model has nothing to type.
+  const goal = '在导航应用中点击搜索框，输入重庆、选择搜索目录中第一个地点的导航按钮，开始导航';
+  assert.equal(textCandidates(goal).values[0], '重庆');
+  // English keeps its spaces, so it stays with the span search.
+  assert.ok(
+    textCandidates('Search for San francisco and tap the first result').values.includes('San francisco'),
   );
 });
 

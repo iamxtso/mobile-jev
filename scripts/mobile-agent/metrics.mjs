@@ -1,6 +1,11 @@
-import { curlRequest } from './http.mjs';
+import { pooledRequest } from './http.mjs';
 
-export function measuredRequest({ service, metrics, onMetric = () => {}, request = curlRequest }) {
+export function measuredRequest({
+  service,
+  metrics,
+  onMetric = () => {},
+  request = pooledRequest,
+}) {
   return async (input) => {
     const started = performance.now();
     const url = new URL(input.url);

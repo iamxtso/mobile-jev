@@ -143,6 +143,32 @@ export function ActivityPanel({ state }: { state: StudioState }) {
                         <Check size={10} />
                         Executed
                       </small>
+                      {typeof decision?.goalVisible === 'number' && (
+                        <small
+                          // Must match MIN_GOAL_VISIBLE in scripts/mobile-agent/policy.mjs.
+                          className={decision.goalVisible >= 0.8 ? 'signal ok' : 'signal'}
+                          title="The model's estimate that the goal is visible on screen"
+                        >
+                          goal {Math.round(decision.goalVisible * 100)}%
+                        </small>
+                      )}
+                      {decision?.snapped && <small className="signal">snapped</small>}
+                      {decision?.point && (
+                        <small
+                          className="signal"
+                          title="Chosen by coordinates, not from the accessibility tree"
+                        >
+                          {decision.point.x},{decision.point.y}
+                        </small>
+                      )}
+                      {typeof decision?.commitProbability === 'number' && (
+                        <small
+                          className={decision.commitProbability >= 0.5 ? 'signal warn' : 'signal'}
+                          title="Probability that this step would send, post, publish, delete, buy or pay"
+                        >
+                          commit {Math.round(decision.commitProbability * 100)}%
+                        </small>
+                      )}
                     </div>
                   </div>
                 );
@@ -174,7 +200,9 @@ export function ActivityPanel({ state }: { state: StudioState }) {
                           ? 'Jev reports the goal is complete. The device is yours.'
                           : run.status === 'stopped'
                             ? 'The task has stopped. You can start a new goal.'
-                            : `The agent stopped: ${(run.outcome || 'unknown').replaceAll('_', ' ')}.`)}
+                            : run.status === 'exhausted'
+                              ? `The goal was not reached within ${run.maxSteps} actions. Run it again with a larger --steps budget.`
+                              : `The agent stopped: ${(run.outcome || 'unknown').replaceAll('_', ' ')}.`)}
                     </p>
                   </span>
                 </div>

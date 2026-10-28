@@ -1,4 +1,4 @@
-import { MobilerunDevice } from './device.mjs';
+import { createAgentDevice, deviceConfig } from './device-factory.mjs';
 import { TypeSafePolicy, runAgent } from './agent.mjs';
 
 const emit = (type, data) =>
@@ -11,7 +11,7 @@ try {
   }
   const { goal, maxSteps } = JSON.parse(input);
   const result = await runAgent({
-    device: new MobilerunDevice(),
+    device: createAgentDevice(deviceConfig()),
     policy: new TypeSafePolicy(),
     goal,
     maxSteps,
@@ -27,6 +27,10 @@ try {
       latencyMs,
       responseModel,
       reason,
+      goalVisible,
+      snapped,
+      point,
+      commitProbability,
     }) =>
       emit('decision', {
         step,
@@ -39,6 +43,10 @@ try {
         latencyMs,
         model: responseModel,
         reason,
+        goalVisible,
+        snapped,
+        point,
+        commitProbability,
       }),
     onAction: ({ step, operation, label, executedMs }) =>
       emit('action', { step, operation, label, executedMs }),
@@ -51,11 +59,7 @@ try {
   });
 } catch (error) {
   let message = error.message;
-  for (const key of [
-    process.env.MOBILERUN_API_KEY,
-    process.env.MOBILERUN_CLOUD_API_KEY,
-    process.env.TYPESAFE_API_KEY,
-  ]) {
+  for (const key of [process.env.TYPESAFE_API_KEY]) {
     if (key) message = message.split(key).join('[redacted]');
   }
   emit('error', { message });

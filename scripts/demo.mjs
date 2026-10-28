@@ -3,7 +3,7 @@ import { mkdir, open, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadEnvironment } from './env.mjs';
-import { MobilerunDevice } from './mobile-agent/device.mjs';
+import { createAgentDevice, deviceConfig } from './mobile-agent/device-factory.mjs';
 import { TypeSafePolicy, runAgent } from './mobile-agent/agent.mjs';
 import { pooledRequest, decodeJson } from './mobile-agent/http.mjs';
 import { measuredRequest, summarizeMetrics } from './mobile-agent/metrics.mjs';
@@ -47,13 +47,7 @@ async function main() {
     };
     const metrics = [],
       decisions = [];
-    const device = new MobilerunDevice({
-      request: measuredRequest({
-        service: 'mobilerun',
-        metrics,
-        onMetric: (metric) => record({ event: 'request_timing', ...metric }),
-      }),
-    });
+    const device = createAgentDevice(deviceConfig());
     const modelRequest = measuredRequest({
       service: 'typesafe',
       metrics,
@@ -86,6 +80,12 @@ async function main() {
     let started,
       setupMs = 0;
     try {
+      // Start from a known screen: a shade or dialog left open by an earlier run hides the app the
+      // task needs, and the setup phase then fails for a reason that has nothing to do with the goal.
+      await device.assertReady();
+      for (const args of [['shell', 'cmd', 'statusbar', 'collapse']]) {
+        await device.run(args, true).catch(() => {});
+      }
       let baselineVerifiedOff = false;
       if (values.reset) {
         const setupStarted = performance.now();

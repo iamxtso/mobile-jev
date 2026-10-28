@@ -141,3 +141,18 @@ test('clear cannot orphan a running or stopping task', () => {
   );
   assert.equal(store.get(run.id).status, 'stopping');
 });
+
+test('a task that ran out of steps is reported as such, not as needing attention', () => {
+  const { child, store } = fixture();
+  for (const [outcome, expected] of [
+    ['step_limit', 'exhausted'],
+    ['decision_limit', 'exhausted'],
+    ['blocked', 'blocked'],
+    ['done', 'succeeded'],
+  ]) {
+    const run = store.start({ goal: `Finish (${outcome})`, maxSteps: 20 });
+    child.stdout.write(`${JSON.stringify({ type: 'result', outcome })}\n`);
+    child.emit('close', 0);
+    assert.equal(store.get(run.id).status, expected, outcome);
+  }
+});

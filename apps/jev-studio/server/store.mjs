@@ -141,7 +141,11 @@ export function createStore({
         if (run.status === 'stopping') finish('stopped');
         else if (code !== 0 || run.error || !outcome)
           finish('failed', run.error || 'The task process ended unexpectedly.');
-        else finish(outcome === 'done' ? 'succeeded' : 'blocked');
+        else if (outcome === 'done') finish('succeeded');
+        // A task that simply ran out of actions did not fail and needs no one's attention: the
+        // model was still working when the budget ended.
+        else if (['step_limit', 'decision_limit'].includes(outcome)) finish('exhausted');
+        else finish('blocked');
       });
       child.stdin.end(JSON.stringify({ goal: run.goal, maxSteps }));
       return snapshot(id);
@@ -171,7 +175,7 @@ export function createStore({
   };
 }
 
-const key = Symbol.for('mobilerun.jev.studio.store');
+const key = Symbol.for('jev.studio.store');
 if (!globalThis[key]) {
   const store = createStore();
   globalThis[key] = store;

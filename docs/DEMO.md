@@ -21,7 +21,7 @@ The reset is also a Jev goal. It has no prepared tap sequence and must independe
 
 The timer starts before readiness, UI observation, and installed-app discovery. It includes model calls, state reads, device actions, transition waits, stale retries, and trace writes, ending at the accepted model outcome. A separate fresh observation verifies the switch. Reports contain execution time, verification time, and their combined total. Reset time is reported separately; after reset, the model connection may already be warm and Settings may already be on the relevant screen. Do not compare that timing with a cold start from another app without stating the difference.
 
-All requests use the Mobilerun API, with Jev at TypeSafe selecting the operations and targets. There is no ADB shortcut. `OPEN_APP` uses the installed-app registry and the public app-start endpoint; it is recorded as a selected action, not hidden setup.
+All device requests go through ADB, with Jev at TypeSafe selecting the operations and targets. `OPEN_APP` uses the installed-app registry and the `am start` command; it is recorded as a selected action, not hidden setup.
 
 ## Development observations
 

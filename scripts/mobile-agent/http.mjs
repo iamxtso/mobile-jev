@@ -1,12 +1,33 @@
-import { spawn } from 'node:child_process';
 import https from 'node:https';
 import http from 'node:http';
 
 const modelAgent = new https.Agent({ keepAlive: true, maxSockets: 2 });
 const loopbackAgent = new http.Agent({ keepAlive: true, maxSockets: 2 });
 
-// Keep the TypeSafe TLS connection warm across decisions. Mobilerun continues to use curl.
-export function pooledRequest({ url, apiKey, method = 'GET', body, timeoutMs = 30_000 }) {
+// A model request has no side effect: it only reads a decision, and nothing has touched the device
+// yet. So it is safe to repeat, unlike a device mutation. A refusal (4xx) is our own bug and is not
+// repeated; a busy service (429, 5xx) or a broken connection is, briefly.
+const RETRYABLE = (status) => status === 429 || status >= 500;
+const ATTEMPTS = 3;
+
+function retryable(error) {
+  error.retryable = true;
+  return error;
+}
+
+// Keep the TypeSafe TLS connection warm across decisions (ADB-only backend).
+export async function pooledRequest(options) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await requestOnce(options, attempt);
+    } catch (error) {
+      if (!error.retryable || attempt >= ATTEMPTS) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 1)));
+    }
+  }
+}
+
+function requestOnce({ url, apiKey, method = 'GET', body, timeoutMs = 30_000 }, attempt) {
   const target = new URL(url);
   const loopback = target.protocol === 'http:' && target.hostname === '127.0.0.1';
   if ((target.protocol !== 'https:' && !loopback) || target.username || target.password)
@@ -28,6 +49,9 @@ export function pooledRequest({ url, apiKey, method = 'GET', body, timeoutMs = 3
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          // Images are off by default and the API refuses a request that carries one without this
+          // acknowledgement. Only a request that really sends an image opts in.
+          ...(body?.assets ? { 'TypeSafe-Danger-Zone-Images': 'true' } : {}),
           ...(payload ? { 'Content-Length': payload.length } : {}),
         },
       },
@@ -42,12 +66,29 @@ export function pooledRequest({ url, apiKey, method = 'GET', body, timeoutMs = 3
         });
         res.on('error', () => {
           clearTimeout(timer);
-          reject(new Error('Model response interrupted; no action executed.'));
+          reject(retryable(new Error('Model response interrupted; no action executed.')));
         });
         res.on('end', () => {
           clearTimeout(timer);
           if (res.statusCode < 200 || res.statusCode >= 300) {
-            reject(new Error(`Model API returned HTTP ${res.statusCode}.`));
+            // Name the refusal without repeating the body: it can echo the credential. Structured
+            // codes and the failing question name are what a 400 or 422 needs to be debuggable.
+            let detail = '';
+            try {
+              const { error } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+              const fields = [
+                error?.code,
+                error?.reason,
+                error?.question && `question=${error.question}`,
+              ];
+              detail = fields.filter((field) => typeof field === 'string' && field).join(' ');
+            } catch {
+              // Not JSON: say nothing about the body.
+            }
+            const failure = new Error(
+              `Model API returned HTTP ${res.statusCode}${detail ? `: ${detail}` : ''}`,
+            );
+            reject(RETRYABLE(res.statusCode) ? retryable(failure) : failure);
             return;
           }
           const wall = elapsed(),
@@ -65,6 +106,7 @@ export function pooledRequest({ url, apiKey, method = 'GET', body, timeoutMs = 3
               reusedConnection: req.reusedSocket,
               httpVersion: res.httpVersion,
               status: res.statusCode,
+              attempts: attempt,
             },
           });
           resolve(bytes);
@@ -94,105 +136,9 @@ export function pooledRequest({ url, apiKey, method = 'GET', body, timeoutMs = 3
     });
     req.on('error', () => {
       clearTimeout(timer);
-      reject(new Error('Model API transport failed; no action executed.'));
+      reject(retryable(new Error('Model API transport failed; no action executed.')));
     });
     req.end(payload);
-  });
-}
-
-// Pass credentials and payload through stdin, never through shell interpolation or argv.
-export function curlRequest({ url, apiKey, method = 'GET', body, timeoutMs = 30_000 }) {
-  if (!apiKey || /[\r\n]/.test(apiKey)) throw new Error('A valid API key is required.');
-  const target = new URL(url);
-  if (
-    target.protocol !== 'https:' &&
-    !(target.protocol === 'http:' && target.hostname === '127.0.0.1')
-  ) {
-    throw new Error('API requests require HTTPS (except loopback tests).');
-  }
-  const quote = (value) => JSON.stringify(String(value));
-  const config = [
-    `url = ${quote(target.href)}`,
-    `request = ${quote(method)}`,
-    `header = ${quote(`Authorization: Bearer ${apiKey}`)}`,
-    'header = "Content-Type: application/json"',
-    ...(body === undefined ? [] : [`data = ${quote(JSON.stringify(body))}`]),
-  ].join('\n');
-  const started = performance.now();
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'curl',
-      [
-        '--disable',
-        '--silent',
-        '--show-error',
-        '--config',
-        '-',
-        '--connect-timeout',
-        '10',
-        '--max-time',
-        String(timeoutMs / 1000),
-        '--write-out',
-        '\n%{json}',
-      ],
-      { stdio: ['pipe', 'pipe', 'pipe'], timeout: timeoutMs + 1000 },
-    );
-    const chunks = [];
-    let bytes = 0;
-    child.on('error', () => reject(new Error('Could not run curl. Install curl and retry.')));
-    child.stdin.on('error', () => {});
-    child.stderr.resume(); // Do not echo remote responses, credentials, or request bodies in errors.
-    child.stdout.on('data', (chunk) => {
-      bytes += chunk.length;
-      if (bytes > 20 * 1024 * 1024) {
-        child.kill();
-        reject(new Error('API response exceeds 20 MiB.'));
-      } else chunks.push(chunk);
-    });
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(
-          new Error(
-            `API transport failed (curl exit ${code}). Actions are not retried; observe before trying again.`,
-          ),
-        );
-        return;
-      }
-      const output = Buffer.concat(chunks);
-      const split = output.lastIndexOf(10);
-      let metadata;
-      try {
-        metadata = JSON.parse(output.subarray(split + 1).toString());
-      } catch {
-        reject(new Error('curl returned invalid response metadata.'));
-        return;
-      }
-      const status = metadata.http_code;
-      const ms = (seconds) => Math.round(seconds * 1000 * 10) / 10;
-      const timing = {
-        wallMs: Math.round((performance.now() - started) * 10) / 10,
-        dnsMs: ms(metadata.time_namelookup),
-        tcpMs: ms(Math.max(0, metadata.time_connect - metadata.time_namelookup)),
-        tlsMs: ms(Math.max(0, metadata.time_appconnect - metadata.time_connect)),
-        responseWaitMs: ms(Math.max(0, metadata.time_starttransfer - metadata.time_pretransfer)),
-        downloadMs: ms(Math.max(0, metadata.time_total - metadata.time_starttransfer)),
-        totalMs: ms(metadata.time_total),
-        httpVersion: metadata.http_version,
-        status,
-      };
-      if (!Number.isInteger(status) || status < 200 || status >= 300) {
-        reject(
-          new Error(
-            `API returned HTTP ${status}: ${status === 401 ? 'check your API key' : 'request failed'}.`,
-          ),
-        );
-        return;
-      }
-      const bytes = output.subarray(0, split);
-      Object.defineProperty(bytes, 'timing', { value: timing });
-      resolve(bytes);
-    });
-    child.stdin.end(config + '\n');
   });
 }
 

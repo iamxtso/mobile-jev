@@ -13,11 +13,12 @@ test('CLI help works from outside the repository without credentials', () => {
   });
   assert.match(help, /pnpm agent COMMAND/);
   assert.match(help, /--execute/);
+  assert.match(help, /--adb-serial SERIAL/);
 });
 
 test('configuration template has no embedded account keys or device ID', () => {
   const template = readFileSync(join(root, '.env.example'), 'utf8');
-  for (const key of ['MOBILERUN_API_KEY', 'MOBILERUN_DEVICE_ID', 'TYPESAFE_API_KEY'])
+  for (const key of ['ADB_SERIAL', 'TYPESAFE_API_KEY'])
     assert.match(template, new RegExp(`^${key}=$`, 'm'));
-  assert.match(template, /^MOBILERUN_BASE_URL=https:\/\/api.mobilerun.ai\/v1$/m);
+  assert.match(template, /^ADB_SERIAL=$/m);
 });

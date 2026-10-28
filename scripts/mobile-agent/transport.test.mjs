@@ -5,14 +5,24 @@ import { once } from 'node:events';
 import { pooledRequest, decodeJson } from './http.mjs';
 import { measuredRequest, summarizeMetrics } from './metrics.mjs';
 
-test('model transport reuses connections, preserves JSON, measures timing, and never retries failures', async (t) => {
+test('model transport reuses connections, preserves JSON, and retries only what is safe to repeat', async (t) => {
   let connections = 0;
   const requests = [];
   const server = createServer(async (req, res) => {
     let body = '';
     for await (const part of req) body += part;
-    requests.push({ path: req.url, body });
+    requests.push({ path: req.url, body, headers: req.headers });
     if (req.url === '/slow') return;
+    if (req.url === '/busy') {
+      // Busy once, then fine: the retry is what makes a free endpoint usable.
+      if (requests.filter((entry) => entry.path === '/busy').length === 1) {
+        res.writeHead(503);
+        res.end('{"error":{"code":"overloaded"}}');
+        return;
+      }
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
     if (req.url === '/error') {
       res.writeHead(401);
       res.end('never print this credential');
@@ -43,17 +53,32 @@ test('model transport reuses connections, preserves JSON, measures timing, and n
   assert.equal(second.timing.reusedConnection, true);
   assert.deepEqual(decodeJson(second), { ok: true });
   assert.deepEqual(JSON.parse(requests[0].body), input.body);
+  // An image request opts in to the API's image handling; a request with no images does not.
+  const withImage = await pooledRequest({
+    ...input,
+    body: { assets: { screenshot: { type: 'image', format: 'png', data_base64: 'x' } } },
+  });
+  assert.deepEqual(decodeJson(withImage), { ok: true });
+  assert.equal(requests.at(-1).headers['typesafe-danger-zone-images'], 'true');
+  assert.equal(requests[0].headers['typesafe-danger-zone-images'], undefined);
   assert.ok(second.timing.wallMs >= 0);
   assert.equal(second.timing.tlsMs, 0);
+  // A refusal is our own mistake: repeating it would only repeat the bug.
   await assert.rejects(
     pooledRequest({ ...input, url: base + '/error' }),
     (e) => /401/.test(e.message) && !e.message.includes('credential'),
   );
+  assert.equal(requests.filter((r) => r.path === '/error').length, 1);
+  // A busy service is not: nothing was decided, so the request is repeated and then succeeds.
+  const retried = await pooledRequest({ ...input, url: base + '/busy' });
+  assert.deepEqual(decodeJson(retried), { ok: true });
+  assert.equal(retried.timing.attempts, 2);
+  // A dead connection is repeated a bounded number of times, then reported.
   await assert.rejects(
     pooledRequest({ ...input, url: base + '/slow', timeoutMs: 30 }),
     /transport failed/,
   );
-  assert.equal(requests.filter((r) => r.path === '/slow').length, 1);
+  assert.equal(requests.filter((r) => r.path === '/slow').length, 3);
 });
 
 test('metrics aggregate by endpoint, include failures, and exclude payloads and credentials', async () => {
