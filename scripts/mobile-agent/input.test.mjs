@@ -65,7 +65,9 @@ test('a value asked for without quotes is offered up to the next clause mark', (
   assert.equal(textCandidates(goal).values[0], '重庆');
   // English keeps its spaces, so it stays with the span search.
   assert.ok(
-    textCandidates('Search for San francisco and tap the first result').values.includes('San francisco'),
+    textCandidates('Search for San francisco and tap the first result').values.includes(
+      'San francisco',
+    ),
   );
 });
 

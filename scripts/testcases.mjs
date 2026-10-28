@@ -83,8 +83,9 @@ async function previousRuns() {
 /** The phone drops its USB link when it sleeps. Recover before a case, and say how. */
 async function ensureDevice(serial) {
   const state = async () =>
-    (await run('adb', ['-s', serial, 'get-state']).catch((error) => ({ stdout: error.message })))
-      .stdout.trim();
+    (
+      await run('adb', ['-s', serial, 'get-state']).catch((error) => ({ stdout: error.message }))
+    ).stdout.trim();
   if ((await state()) === 'device') return true;
   await run('adb', ['reconnect', 'offline']).catch(() => {});
   await run('adb', ['connect', '127.0.0.1:15555']).catch(() => {});
@@ -130,7 +131,12 @@ async function runCase({ testCase, device, policy, steps, settleMs, serial }) {
       settleMs,
       waitTimeoutMs: 15_000,
       onStep: async (step) => {
-        const { operationProbabilities, targetProbabilities, ...rest } = step;
+        // The probability maps are large and the verdict never reads them; the chosen probability does.
+        const {
+          operationProbabilities: _operations,
+          targetProbabilities: _targets,
+          ...rest
+        } = step;
         await record({ event: 'decision', ...rest });
       },
       onAction: async (event) => record({ event: 'action_executed', ...event }),
@@ -218,14 +224,16 @@ async function main() {
   }
   const all = await load(values);
   if (values.list) {
-    for (const testCase of all)
-      console.log(`${testCase.id}\t${testCase.group}\t${testCase.name}`);
+    for (const testCase of all) console.log(`${testCase.id}\t${testCase.group}\t${testCase.name}`);
     console.log(`\n${all.length} cases in ${new Set(all.map((c) => c.source)).size} sheets`);
     return;
   }
 
   const done = values.resume ? new Set((await previousRuns()).map((entry) => entry.id)) : new Set();
   const only = values.only ? new Set(values.only.split(',').map((id) => id.trim())) : null;
+  // An empty --only reads as "no filter" and would run every sheet: refuse it instead.
+  if (only && !only.size)
+    throw new Error('--only needs at least one case id, e.g. --only f07-2,f07-3.');
   const groups = values.group ?? [];
   const files = values.file ?? [];
   const selected = all
@@ -246,9 +254,7 @@ async function main() {
   const started = Date.now();
   let passed = 0;
   for (const [index, testCase] of selected.entries()) {
-    process.stdout.write(
-      `[${index + 1}/${selected.length}] ${testCase.id} ${testCase.name} ... `,
-    );
+    process.stdout.write(`[${index + 1}/${selected.length}] ${testCase.id} ${testCase.name} ... `);
     try {
       const record = await runCase({
         testCase,
@@ -277,11 +283,12 @@ async function main() {
   const runs = await previousRuns();
   const unique = [...new Map(runs.map((entry) => [entry.id, entry])).values()];
   await writeFile(join(OUT, 'summary.md'), summaryMarkdown(unique));
-  console.log(`\n${passed}/${selected.length} verified this pass; ${unique.length} results recorded.`);
+  console.log(
+    `\n${passed}/${selected.length} verified this pass; ${unique.length} results recorded.`,
+  );
 }
 
 main().catch((error) => {
   console.error(error.message);
   process.exitCode = 1;
 });
-

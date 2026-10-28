@@ -25,13 +25,13 @@ Case ids are `<sheet>-<row>`: `f07-2` is the second sheet of the directory, row 
 
 The model's status and the screen's verdict are recorded separately, and `verdict` combines them:
 
-| verdict          | meaning                                                        |
-| ---------------- | -------------------------------------------------------------- |
-| `pass`           | the model said done and the screen shows the expected result   |
-| `pass_unclaimed` | the screen shows it, the model ended some other way            |
-| `claimed_only`   | the model said done and the screen disagrees                   |
-| `fail`           | neither                                                        |
-| `error`          | the run or the read died (device, transport)                   |
+| verdict          | meaning                                                      |
+| ---------------- | ------------------------------------------------------------ |
+| `pass`           | the model said done and the screen shows the expected result |
+| `pass_unclaimed` | the screen shows it, the model ended some other way          |
+| `claimed_only`   | the model said done and the screen disagrees                 |
+| `fail`           | neither                                                      |
+| `error`          | the run or the read died (device, transport)                 |
 
 ## Evidence
 
