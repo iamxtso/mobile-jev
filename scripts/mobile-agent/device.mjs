@@ -4,6 +4,7 @@ import { promisify } from 'node:util';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { prepareInputVerification } from './input-verification.mjs';
 import { HelperClient } from './helper.mjs';
+import { clearField, enterText } from './text-entry.mjs';
 
 export const GLOBAL_ACTIONS = { back: 1, home: 2, recent: 3 };
 export const KEYS = { back: 4, tab: 61, enter: 66, delete: 67, forward_delete: 112 };
@@ -13,6 +14,34 @@ const DRAG_VECTORS = { LEFT: [-0.35, 0], RIGHT: [0.35, 0], UP: [0, -0.3], DOWN: 
 const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
 
 export class StaleObservationError extends Error {}
+
+// The network does not change between two steps of one run, and each read costs three adb calls.
+const NETWORK_TTL_MS = 1500;
+
+/** Whether a box covers less than the element itself, which is when aiming at it matters. */
+function differsFrom(box, bounds) {
+  if (!box || !bounds) return false;
+  if (box.right <= box.left || box.bottom <= box.top) return false;
+  return (
+    box.left !== bounds.left ||
+    box.top !== bounds.top ||
+    box.right !== bounds.right ||
+    box.bottom !== bounds.bottom
+  );
+}
+
+/**
+ * Where a gesture on an element lands: the middle of the box its name is drawn in when that is a label
+ * inside a larger cell, otherwise the middle of the element itself. A toolbar cell centres its glyph,
+ * so the two usually agree; when they do not, the glyph is what a person aims at.
+ */
+function aim(element) {
+  const box = element.nameBox ?? element.bounds;
+  return {
+    x: Math.floor((box.left + box.right) / 2),
+    y: Math.floor((box.top + box.bottom) / 2),
+  };
+}
 
 function targetMeaning(observation, id) {
   const target = observation.elements.find((element) => element.id === id);
@@ -128,11 +157,7 @@ async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, i
       const node = current.elements.find((entry) => entry.id === action.elementId);
       if (!node?.enabled || !(node.clickable || node.editable))
         throw new Error('Element is not actionable.');
-      resolved = {
-        type: 'tap',
-        x: Math.floor((node.bounds.left + node.bounds.right) / 2),
-        y: Math.floor((node.bounds.top + node.bounds.bottom) / 2),
-      };
+      resolved = { type: 'tap', ...aim(node) };
       break;
     }
     case 'swipe':
@@ -195,10 +220,7 @@ async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, i
       if (action.elementId) {
         const node = current.elements.find((entry) => entry.id === action.elementId);
         if (!node) throw new Error('Element is no longer on screen.');
-        at = {
-          x: Math.floor((node.bounds.left + node.bounds.right) / 2),
-          y: Math.floor((node.bounds.top + node.bounds.bottom) / 2),
-        };
+        at = aim(node);
       } else {
         point(action.x, action.y);
         at = { x: action.x, y: action.y };
@@ -226,8 +248,7 @@ async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, i
       const node = current.elements.find((entry) => entry.id === action.elementId);
       if (!node) throw new Error('Element is no longer on screen.');
       const [dx, dy] = DRAG_VECTORS[action.direction];
-      const startX = Math.floor((node.bounds.left + node.bounds.right) / 2);
-      const startY = Math.floor((node.bounds.top + node.bounds.bottom) / 2);
+      const { x: startX, y: startY } = aim(node);
       // `input swipe` moves at once, which the launcher treats as a fling. `draganddrop` presses,
       // waits, then moves: what a finger does when it picks an icon up.
       resolved = {
@@ -276,22 +297,131 @@ async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, i
       throw new Error('Unsupported action type.');
   }
   const receipt = inputVerification?.(current, action);
-  await dispatch(resolved);
-  return receipt ? { inputVerification: receipt } : undefined;
+  const executed = await dispatch(resolved);
+  const consumed = {
+    ...(receipt ? { inputVerification: receipt } : {}),
+    // Which text tier answered — clipboard, adbkeyboard, yadb, input, or pinyin. Without it a trace
+    // cannot say whether a Chinese goal arrived by paste or by a keyboard spelling.
+    ...(resolved.type === 'type' && typeof executed === 'string' ? { inputTier: executed } : {}),
+  };
+  return Object.keys(consumed).length ? consumed : undefined;
 }
 // A list row is often a clickable container whose text lives in a child TextView, so the container
 // itself looks anonymous. Folding the children's text in lets the row keep a name without the model
 // having to guess which container is which.
-function descendantText(node, depth = 0) {
-  if (depth > 4 || !Array.isArray(node.children)) return '';
+/**
+ * The first named descendant of a node that has no name of its own, with the box that name is drawn in.
+ * A clickable container is often much larger than the label it is named after — a toolbar cell whose
+ * glyph sits in the middle of its own cell — so the box is what a tap has to aim at.
+ */
+function descendantName(node, depth = 0) {
+  if (depth > 4 || !Array.isArray(node.children)) return null;
   for (const child of node.children) {
     if (!child || child.isPassword === true) continue;
     const own = (child.text || child.contentDescription || '').trim();
-    if (own) return own;
-    const deeper = descendantText(child, depth + 1);
+    if (own) return { text: own, box: child.boundsInScreen ?? null };
+    const deeper = descendantName(child, depth + 1);
     if (deeper) return deeper;
   }
-  return '';
+  return null;
+}
+
+// A clickable icon that carries no text and no description.
+function anonymousControl(node) {
+  return (
+    node?.isVisibleToUser !== false &&
+    node?.isClickable === true &&
+    !(node.text || '').trim() &&
+    !(node.contentDescription || '').trim() &&
+    !descendantName(node)
+  );
+}
+
+// A row of nothing but unnamed clickable icons: the only thing that tells one from another is where
+// it sits.
+function anonymousIconRow(parent) {
+  const children = Array.isArray(parent?.children) ? parent.children : [];
+  const clickable = children.filter(
+    (child) => child?.isVisibleToUser !== false && child?.isClickable === true,
+  );
+  const unnamed = clickable.filter(anonymousControl);
+  return clickable.length >= 2 && unnamed.length === clickable.length ? unnamed : [];
+}
+
+// A delete or add badge sits in the corner of the cell it belongs to and carries no name of its own,
+// so the cell is the only thing that says what the badge acts on. Without this the badge is an
+// anonymous 31 px square, and the model taps the cell underneath it instead.
+function anonymousCornerName(node, parent) {
+  if (!anonymousControl(node)) return '';
+  const cell = parent?.boundsInScreen;
+  const own = node.boundsInScreen;
+  if (!cell || !own) return '';
+  const cellWidth = cell.right - cell.left;
+  const cellHeight = cell.bottom - cell.top;
+  const width = own.right - own.left;
+  const height = own.bottom - own.top;
+  if (!(width > 0 && height > 0)) return '';
+  if (width > cellWidth * 0.4 || height > cellHeight * 0.4) return '';
+  const contact = 32;
+  const vertical =
+    own.top - cell.top <= contact ? '上' : cell.bottom - own.bottom <= contact ? '下' : '';
+  const horizontal =
+    cell.right - own.right <= contact ? '右' : own.left - cell.left <= contact ? '左' : '';
+  if (!vertical || !horizontal) return '';
+  const cellName =
+    (parent.text || parent.contentDescription || '').trim() || descendantName(parent)?.text;
+  if (!cellName) return '';
+  // Cells describe themselves with a list, and only the first entry is the name a person reads.
+  const short = cellName.split(';')[0].trim().slice(0, 24);
+  return short ? `${short} 的${horizontal}${vertical}角按钮` : '';
+}
+
+// Two unnamed rows can share a container name — any app without resource ids falls back to the class
+// name — and then `1 of 2 in FrameLayout` names two different controls. The second gets a suffix.
+function rowAnchor(parent, counts, assigned) {
+  const known = assigned.get(parent);
+  if (known) return known;
+  const base =
+    (parent.resourceId || '').split('/').pop() ||
+    (parent.className || '').split('.').pop() ||
+    'parent';
+  const seen = (counts.get(base) || 0) + 1;
+  counts.set(base, seen);
+  const anchor = seen === 1 ? base : `${base}#${seen}`;
+  assigned.set(parent, anchor);
+  return anchor;
+}
+
+// Several siblings like that read as the same blank to the model, which then has to guess: on a car
+// dock it pressed "next track" instead of "pause", eleven times in a row. Numbering them by position
+// turns a blind pick into a named choice, without teaching the policy what any glyph means. The row
+// has to be all icons: mixed rows are already distinguishable by their named members, and numbering
+// their containers would name the wrong control.
+function anonymousSiblingName(node, parent, anchors) {
+  const siblings = anonymousIconRow(parent);
+  if (!siblings.includes(node)) return '';
+  const anchor = anchors ? rowAnchor(parent, anchors.counts, anchors.assigned) : '';
+  return `${siblings.indexOf(node) + 1} of ${siblings.length} in ${anchor || 'parent'}`;
+}
+
+/**
+ * Where a device is right now, small enough for one trace line. A run that dies mid-way uses this to
+ * say what it left on the screen; a read that fails here is reported as unreadable rather than as an
+ * unchanged screen.
+ */
+export async function lastState(device) {
+  try {
+    const observation = await device.observe();
+    return {
+      deviceId: observation.deviceId,
+      packageName: observation.phone.packageName,
+      currentApp: observation.phone.currentApp,
+      fingerprint: observation.fingerprint,
+      elements: observation.elements.length,
+    };
+  } catch (error) {
+    return { unreadable: error.message };
+  }
 }
 
 export function summarizeState(raw, deviceId) {
@@ -308,7 +438,8 @@ export function summarizeState(raw, deviceId) {
     throw new Error('UI state is missing its tree, phone state, or valid screen bounds.');
   }
   const elements = [];
-  const visit = (node, path) => {
+  const anchors = { counts: new Map(), assigned: new WeakMap() };
+  const visit = (node, path, parent) => {
     if (!node || typeof node !== 'object') return;
     const b = node.boundsInScreen;
     const bounds =
@@ -340,13 +471,30 @@ export function summarizeState(raw, deviceId) {
           'android.widget.MultiAutoCompleteTextView',
         ].includes(node.className);
       if (text || label || node.isClickable || editable || node.isScrollable) {
-        const nested = text || label ? '' : descendantText(node);
+        const named = text || label ? null : descendantName(node);
+        const nested =
+          named?.text ||
+          (text || label
+            ? ''
+            : anonymousCornerName(node, parent) || anonymousSiblingName(node, parent, anchors));
+        // Where the name is drawn, when that is somewhere inside the container rather than on it.
+        const nameBox =
+          named?.box &&
+          [named.box.left, named.box.top, named.box.right, named.box.bottom].every(Number.isFinite)
+            ? {
+                left: Math.max(bounds.left, named.box.left),
+                top: Math.max(bounds.top, named.box.top),
+                right: Math.min(bounds.right, named.box.right),
+                bottom: Math.min(bounds.bottom, named.box.bottom),
+              }
+            : null;
         elements.push({
           id: path,
           className: node.className || '',
           text,
           label,
           ...(nested ? { nested } : {}),
+          ...(nameBox && differsFrom(nameBox, bounds) ? { nameBox } : {}),
           resourceId: node.resourceId || '',
           hint: node.hint || '',
           bounds,
@@ -363,7 +511,7 @@ export function summarizeState(raw, deviceId) {
       }
     }
     if (Array.isArray(node.children))
-      node.children.forEach((child, i) => visit(child, `${path}.${i}`));
+      node.children.forEach((child, i) => visit(child, `${path}.${i}`, node));
   };
   visit(raw.a11y_tree, 'ui');
   const inputs = elements.filter((e) => e.editable && e.enabled);
@@ -562,7 +710,13 @@ function treePackage(node) {
 }
 
 export class AdbDevice {
-  constructor({ serial, adbPath = 'adb', execFile: runner = execFileAsync, helper = false } = {}) {
+  constructor({
+    serial,
+    adbPath = 'adb',
+    execFile: runner = execFileAsync,
+    helper = false,
+    helperPort,
+  } = {}) {
     if (typeof serial !== 'string' || !/^[A-Za-z0-9._:-]+$/.test(serial.trim()))
       throw new Error('ADB mode requires one explicit serial using letters, numbers, . _ : or -.');
     this.serial = serial.trim();
@@ -574,7 +728,7 @@ export class AdbDevice {
     // The accessibility helper app reads the tree and takes a screenshot in one request, without
     // taking the UiAutomation channel that uiautomator needs. Opt-in: it costs one probe per run.
     this.helper = helper
-      ? new HelperClient({ serial: this.serial, adbPath, execFile: runner })
+      ? new HelperClient({ serial: this.serial, adbPath, execFile: runner, fixedPort: helperPort })
       : null;
     this.snapshotImage = null;
   }
@@ -634,12 +788,30 @@ export class AdbDevice {
     }
   }
 
+  /**
+   * One read that skips the helper. The helper follows the accessibility-focused window, which on this
+   * ROM is sometimes the dock overlay even while an app owns the screen; the slow `uiautomator` read
+   * returns the app's own window. Costs about ten seconds, so it is for the one screen where the wrong
+   * window would send the model at chrome it cannot use.
+   */
+  async observeDirect() {
+    const helper = this.helper;
+    this.helper = null;
+    try {
+      return await this.observe();
+    } finally {
+      this.helper = helper;
+    }
+  }
+
   async observe() {
     // A dump taken while a window is settling can disagree with the display size, or arrive as
     // malformed XML. Those are stale reads, and a read is safe to repeat: do not end the run for them.
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.readObservation();
+        const observation = await this.readObservation();
+        observation.network = await this.networkState();
+        return await this.dropKeyboardCandidates(observation);
       } catch (error) {
         // A window that is still animating has no idle state yet, and the dump then writes an error
         // instead of XML. Waiting is the fix; a real disconnect keeps failing and is reported.
@@ -647,10 +819,13 @@ export class AdbDevice {
           /do not match the current display|malformed XML|could not get (idle state|dump)|ERROR: could not/.test(
             error?.message,
           );
-        // A launch animation keeps `uiautomator dump` unreliable for about a second; the read is
-        // free to repeat, so wait it out instead of ending the run.
-        if (!transient || attempt >= 3) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+        // A launch animation keeps `uiautomator dump` unreliable for about a second, and a remote adb
+        // connection drops the odd read outright. A read has no side effect, so every read error is
+        // worth repeating once before it ends the run; a device that is really gone keeps failing.
+        if (attempt >= 2) throw error;
+        await new Promise((resolve) =>
+          setTimeout(resolve, (transient ? 250 : 600) * (attempt + 1)),
+        );
       }
     }
   }
@@ -663,6 +838,9 @@ export class AdbDevice {
       // momentary miss is worth repeating before falling back to the slower, fussier adb read.
       for (let attempt = 0; (await this.helper.available()) && attempt < 3; attempt++) {
         const snapshot = await this.helper.snapshot();
+        // A tree that is only the dock and status bar is what the helper sometimes returns while an
+        // app owns the screen. The adb read is not a fix: with a live clock on that ROM the dump never
+        // reaches idle state and one read took 36 s, so the tree is used as it comes.
         if (snapshot) return this.observationFromSnapshot(snapshot);
         await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
       }
@@ -701,6 +879,57 @@ export class AdbDevice {
     );
   }
 
+  /**
+   * Where the input method window sits, or null when it is not on screen.
+   *
+   * The keyboard is a window of its own and its buttons arrive in the same tree as the app's controls:
+   * on a search screen the Sogou toolbar's Sogou logo, keyboard toggle and collapse arrow look like three
+   * unnamed buttons, which the tree then numbers `1 of 3 in ViewGroup`. The model tapped that number twice
+   * while looking for a search result. Typing never taps the keyboard — text goes in through the helper's
+   * clipboard — so anything inside that window is noise that reads as a target.
+   */
+  async keyboardRegion() {
+    const output = await this.run(['shell', 'dumpsys', 'window', 'windows']);
+    const block = output
+      .toString('utf8')
+      .split(/\n\s*Window #/)
+      .find((chunk) => /mIsImWindow=true/.test(chunk) && /isVisible=true/.test(chunk));
+    if (!block) return null;
+    // The touchable region is the area the keyboard actually takes: it excludes the app's own bar above it.
+    const region = block.match(/touchable region=SkRegion\(\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)\)/);
+    const frame = region ?? block.match(/\bframe=\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
+    if (!frame) return null;
+    return {
+      left: Number(frame[1]),
+      top: Number(frame[2]),
+      right: Number(frame[3]),
+      bottom: Number(frame[4]),
+    };
+  }
+
+  /** Drop the keyboard's own buttons from the clickable set; the field above it stays. */
+  async dropKeyboardCandidates(observation) {
+    if (!observation.phone?.keyboardVisible) return observation;
+    let region;
+    try {
+      region = await this.keyboardRegion();
+    } catch {
+      // A read that fails costs one stale candidate list, not the whole observation.
+      return observation;
+    }
+    if (!region || region.right <= region.left || region.bottom <= region.top) return observation;
+    const inside = (bounds) => {
+      const x = (bounds.left + bounds.right) / 2;
+      const y = (bounds.top + bounds.bottom) / 2;
+      return x >= region.left && x <= region.right && y >= region.top && y <= region.bottom;
+    };
+    const elements = observation.elements.filter(
+      (element) => !(element.clickable && inside(element.bounds)),
+    );
+    if (elements.length === observation.elements.length) return observation;
+    return { ...observation, elements, keyboardRegion: region };
+  }
+
   observationFromSnapshot(snapshot) {
     const size = { width: snapshot.width, height: snapshot.height };
     if (!size.width || !size.height) throw new Error('The helper returned invalid screen bounds.');
@@ -723,6 +952,41 @@ export class AdbDevice {
       },
       this.serial,
     );
+  }
+
+  /**
+   * Can this device reach the internet, and could it get there on its own? Read from the device rather
+   * than from the status-bar glyph, so an agent that acts on it acts on a fact: `internet` is a real
+   * one-packet probe, `wifiOn` is the setting, and `saved` counts the networks this device already has
+   * credentials for — a non-zero count is what makes reconnecting something the agent can do without
+   * asking for a password. Cached for NETWORK_TTL_MS: three adb calls per observation would otherwise
+   * cost more than the tree read.
+   */
+  /** A tap on a network control makes the cached answer wrong at once; the next read refreshes it. */
+  invalidateNetwork() {
+    this.networkAt = -Infinity;
+  }
+
+  async networkState() {
+    const now = performance.now();
+    if (this.network && now - this.networkAt < NETWORK_TTL_MS) return this.network;
+    // One shell round trip, not three: over a remote adb server each call costs about a second, and this
+    // runs on every observation.
+    const report = await this.run([
+      'shell',
+      'echo "N:$(ping -c1 -W1 223.5.5.5 >/dev/null 2>&1 && echo up || echo down)"; echo "W:$(settings get global wifi_on)"; echo "S:$(cmd wifi list-networks 2>/dev/null | wc -l)"',
+    ])
+      .then((out) => out.toString('utf8'))
+      .catch(() => '');
+    const value = (tag) => (new RegExp(`^${tag}:(.*)$`, 'm').exec(report)?.[1] ?? '').trim();
+    this.network = {
+      internet: value('N') === 'up',
+      wifiOn: value('W') === '1',
+      // `wc -l` counts the header line too, and a device with no saved network prints only that header.
+      saved: Math.max(0, Number(value('S') || 0) - 1),
+    };
+    this.networkAt = now;
+    return this.network;
   }
 
   async listApps() {
@@ -862,23 +1126,15 @@ export class AdbDevice {
             ],
             true,
           );
-        if (resolved.type === 'clear')
-          return this.run(['shell', 'input', 'keyevent', '--longpress', '67'], true);
+        if (resolved.type === 'clear') return clearField(this);
         if (resolved.type === 'key')
           return this.run(['shell', 'input', 'keyevent', String(KEYS[resolved.key])], true);
         if (resolved.type === 'global') {
           const keycode = { back: 4, home: 3, recent: 187 }[resolved.name];
           return this.run(['shell', 'input', 'keyevent', String(keycode)], true);
         }
-        if (resolved.type === 'type') {
-          if (!/^[A-Za-z0-9 ._@+:-]+$/.test(resolved.text))
-            throw new Error(
-              'ADB text supports only letters, numbers, spaces, and ._@+:- characters.',
-            );
-          if (resolved.clear)
-            await this.run(['shell', 'input', 'keyevent', '--longpress', '67'], true);
-          return this.run(['shell', 'input', 'text', resolved.text.replaceAll(' ', '%s')], true);
-        }
+        if (resolved.type === 'type')
+          return enterText(this, { text: resolved.text, clear: resolved.clear });
         throw new Error('Unsupported action type.');
       },
       (current, action) => prepareInputVerification(current, action),

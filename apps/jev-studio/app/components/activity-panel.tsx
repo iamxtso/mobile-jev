@@ -145,7 +145,8 @@ export function ActivityPanel({ state }: { state: StudioState }) {
                       </small>
                       {typeof decision?.goalVisible === 'number' && (
                         <small
-                          className={decision.goalVisible >= 0.5 ? 'signal ok' : 'signal'}
+                          // Must match MIN_GOAL_VISIBLE in scripts/mobile-agent/policy.mjs.
+                          className={decision.goalVisible >= 0.8 ? 'signal ok' : 'signal'}
                           title="The model's estimate that the goal is visible on screen"
                         >
                           goal {Math.round(decision.goalVisible * 100)}%

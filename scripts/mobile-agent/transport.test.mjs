@@ -11,7 +11,7 @@ test('model transport reuses connections, preserves JSON, and retries only what 
   const server = createServer(async (req, res) => {
     let body = '';
     for await (const part of req) body += part;
-    requests.push({ path: req.url, body });
+    requests.push({ path: req.url, body, headers: req.headers });
     if (req.url === '/slow') return;
     if (req.url === '/busy') {
       // Busy once, then fine: the retry is what makes a free endpoint usable.
@@ -53,6 +53,14 @@ test('model transport reuses connections, preserves JSON, and retries only what 
   assert.equal(second.timing.reusedConnection, true);
   assert.deepEqual(decodeJson(second), { ok: true });
   assert.deepEqual(JSON.parse(requests[0].body), input.body);
+  // An image request opts in to the API's image handling; a request with no images does not.
+  const withImage = await pooledRequest({
+    ...input,
+    body: { assets: { screenshot: { type: 'image', format: 'png', data_base64: 'x' } } },
+  });
+  assert.deepEqual(decodeJson(withImage), { ok: true });
+  assert.equal(requests.at(-1).headers['typesafe-danger-zone-images'], 'true');
+  assert.equal(requests[0].headers['typesafe-danger-zone-images'], undefined);
   assert.ok(second.timing.wallMs >= 0);
   assert.equal(second.timing.tlsMs, 0);
   // A refusal is our own mistake: repeating it would only repeat the bug.

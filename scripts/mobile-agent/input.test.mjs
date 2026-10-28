@@ -41,6 +41,23 @@ test('goal spans include the requested city verbatim and explicit values overrid
   );
 });
 
+test('a quoted value is offered first, which is the only signal in text written without spaces', () => {
+  // The goal has one whitespace-delimited word, so the span search can only offer the whole sentence.
+  const quoted = textCandidates('在导航搜索框输入“充电站”，然后点击搜索按钮。');
+  assert.equal(quoted.values[0], '充电站');
+  assert.ok(quoted.values.includes('在导航搜索框输入“充电站”，然后点击搜索按钮。'));
+  // Straight quotes, corner brackets and book-title marks are all quotation on this device.
+  for (const goal of [
+    '搜索 "星海广场" 并导航',
+    '在搜索框输入「大连北站」',
+    '把出发地设为《和平广场》',
+  ]) {
+    assert.equal(textCandidates(goal).values[0], goal.match(/["「《]([^"」》]+)["」》]/u)[1], goal);
+  }
+  // A goal with no quotation keeps the plain span search.
+  assert.deepEqual(textCandidates('打开设置', []).values[0], '打开设置');
+});
+
 test('visible children survive invisible accessibility containers', () => {
   const data = raw();
   data.a11y_tree.isVisibleToUser = false;

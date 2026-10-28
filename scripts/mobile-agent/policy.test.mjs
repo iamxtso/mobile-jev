@@ -384,14 +384,19 @@ test('stale decisions re-observe and re-predict; uncertain mutations never retry
   }
 });
 
-// A fingerprint that changes on every read keeps the exact-repeat and nearby-tap guards out of the
-// way, so a stop can only come from the stuck answer.
+// A row whose value changes on every read keeps the exact-repeat and nearby-tap guards out of the
+// way, so a stop can only come from the stuck answer. A moved fingerprint alone is not enough: a tap
+// is judged by the control it hit, and a home screen moves on its own anyway.
 const steppingDevice = () => {
   let reads = 0,
     acts = 0;
   const device = {
     assertReady: async () => {},
-    observe: async () => ({ ...observe(), fingerprint: String(reads++) }),
+    observe: async () => {
+      const observation = observe();
+      observation.elements[1].text = `About phone ${reads++}`;
+      return observation;
+    },
     act: async () => {
       acts++;
     },
@@ -487,13 +492,16 @@ test('a screenshot adds one box question; the accessibility tree is used when it
         JSON.stringify({
           answers: {
             operation: answer(body.questions.operation.criteria, 'TAP_POINT'),
-            target_point: { type: 'box', box: { left: 0.1, top: 0.3, right: 0.2, bottom: 0.4 } },
+            target_point: {
+              type: 'box',
+              box: { left: 0.45, top: 0.32, right: 0.55, bottom: 0.38 },
+            },
           },
         }),
       );
     },
   });
-  // Two separate rows on a 200x400 screen; the box covers the second one only.
+  // Two separate rows on a 200x400 screen; the box marks the middle of the second one.
   const observation = observe();
   observation.elements = [
     node('ui.0', 'Search', { editable: true, bounds: { left: 0, top: 0, right: 200, bottom: 60 } }),
@@ -507,7 +515,49 @@ test('a screenshot adds one box question; the accessibility tree is used when it
   assert.equal(decision.operation, 'TAP_POINT');
   assert.equal(decision.snapped, true);
   assert.deepEqual(decision.action, { type: 'tap-element', elementId: 'ui.1' });
-  assert.deepEqual(decision.point, { x: 30, y: 140 });
+  assert.deepEqual(decision.point, { x: 100, y: 140 });
+});
+
+test('a point inside a row of identical icons is resolved by asking which icon, not where', async () => {
+  const asked = [];
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) => {
+      if (body.questions.row) {
+        asked.push(body.questions.row);
+        return Buffer.from(
+          JSON.stringify({ answers: { row: answer(body.questions.row.criteria, 'icon_1') } }),
+        );
+      }
+      // The box marks the second icon; the row knows the first one is the one the goal needs.
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP_POINT'),
+            target_point: { type: 'box', box: { left: 0.5, top: 0.8, right: 0.7, bottom: 0.9 } },
+          },
+        }),
+      );
+    },
+  });
+  const observation = observe();
+  observation.elements = [
+    node('ui.0', 'Track title', { clickable: false }),
+    node('ui.1', '', {
+      nested: '1 of 2 in rv_action_list',
+      bounds: { left: 40, top: 320, right: 90, bottom: 380 },
+    }),
+    node('ui.2', '', {
+      nested: '2 of 2 in rv_action_list',
+      bounds: { left: 90, top: 320, right: 140, bottom: 380 },
+    }),
+  ];
+  const decision = await policy.decide({ goal: 'Pause the music', observation, image: 'AAAA' });
+  assert.equal(decision.operation, 'TAP_POINT');
+  assert.deepEqual(decision.action, { type: 'tap-element', elementId: 'ui.1' });
+  assert.deepEqual(decision.rowPick, { group: 'rv_action_list', index: 1, confidence: 1 });
+  assert.equal(asked.length, 1);
+  assert.equal(Object.keys(asked[0].criteria).length, 2);
+  assert.match(asked[0].instructions, /rv_action_list/);
 });
 
 test('a screenshot still taps when no observed element contains the point', async () => {
@@ -591,6 +641,20 @@ test('DONE against a screen that does not show the goal is reported, not accepte
   });
   assert.equal(decision.status, 'done_unverified');
   assert.match(decision.reason, /not visible/);
+});
+
+test('DONE that the screen only half supports is reported, not accepted', async () => {
+  // 0.57 was measured on a car dock: Jev chose DONE while the music still played, and the run
+  // recorded success. Only a screen that clearly shows the finished goal may count.
+  for (const goalVisible of [0.5, 0.57, 0.79]) {
+    const decision = await visionPolicy(goalVisible).decide({
+      goal: 'Pause the music',
+      observation: observe(),
+      image: 'AAAA',
+    });
+    assert.equal(decision.status, 'done_unverified', `goalVisible ${goalVisible}`);
+    assert.match(decision.reason, /not visible/);
+  }
 });
 
 test('a model that answers no noul question keeps the old DONE behaviour', async () => {
@@ -932,4 +996,158 @@ test('a tap that never changes the screen recovers three times, then reports the
   assert.equal(acts(), 12);
   assert.equal(result.steps, 12);
   assert.match(result.decision.reason, /^3 taps around \(122, 100\) changed nothing on screen\.$/);
+});
+
+test('a tapped control is compared by its own drawing and its own goal reading', async () => {
+  let body;
+  const policy = new TypeSafePolicy({
+    request: async (request) => {
+      body = request.body;
+      return Buffer.from(
+        JSON.stringify({
+          model: 'jev-test',
+          answers: {
+            change: answer(
+              {
+                same: '',
+                changed: '',
+                unreadable: '',
+              },
+              'changed',
+              0.97,
+            ),
+            satisfied: { type: 'noul', noul: 0.92 },
+          },
+        }),
+      );
+    },
+  });
+  const read = await policy.readsControlChange({
+    goal: '暂停音乐',
+    before: 'before-png',
+    after: 'after-png',
+  });
+  assert.deepEqual(read, {
+    change: 'changed',
+    confidence: 0.97,
+    satisfied: 0.92,
+    usage: undefined,
+  });
+  // Both crops travel with the question, and the goal is in the state so the second question can use it.
+  assert.equal(body.assets.before.data_base64, 'before-png');
+  assert.equal(body.assets.after.data_base64, 'after-png');
+  assert.equal(body.state.goal, '暂停音乐');
+  assert.equal(body.questions.change.type, 'choice');
+  assert.equal(body.questions.satisfied.type, 'noul');
+  // A missing reading is not a "no change": the caller must not treat it as evidence either way.
+  const silent = new TypeSafePolicy({ request: async () => Buffer.from('{"answers":{}}') });
+  await assert.rejects(
+    silent.readsControlChange({ goal: 'x', before: 'a', after: 'b' }),
+    /invalid choice distribution/,
+  );
+});
+
+test('a point in the corner of a large card is tapped where it was marked', async () => {
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) =>
+      Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP_POINT'),
+            target_point: { type: 'box', box: { left: 0.86, top: 0.34, right: 0.9, bottom: 0.36 } },
+          },
+        }),
+      ),
+  });
+  const observation = observe();
+  // A 476x234 card whose title is drawn in the middle; its add badge sits in the top-right corner.
+  observation.elements = [
+    {
+      ...node('ui.0', '露营模式', { bounds: { left: 100, top: 300, right: 576, bottom: 534 } }),
+      nameBox: { left: 180, top: 420, right: 320, bottom: 470 },
+      clickable: true,
+    },
+  ];
+  const decision = await policy.decide({
+    goal: 'Add the camping widget',
+    observation,
+    image: 'AAAA',
+  });
+  // 0.88 of the screen width lands in the card's corner, outside the name it is drawn for.
+  assert.equal(decision.snapped, false);
+  assert.equal(decision.action.type, 'tap');
+});
+
+test('a positional label loses to the box the model marked', async () => {
+  // Two unnamed icons and one named row: the choice answer can only say "1 of 2 in ViewGroup", which is
+  // the keyboard toolbar's logo. The box answer marks the row the model actually means.
+  const row = node('ui.9', '重庆市 1470公里', {
+    bounds: { left: 0, top: 300, right: 200, bottom: 360 },
+  });
+  const observation = {
+    ...observe(),
+    screen: { width: 200, height: 400 },
+    elements: [
+      node('ui.0', '1 of 2 in ViewGroup', {
+        bounds: { left: 0, top: 0, right: 100, bottom: 40 },
+      }),
+      node('ui.1', '2 of 2 in ViewGroup', {
+        bounds: { left: 100, top: 0, right: 200, bottom: 40 },
+      }),
+      row,
+    ],
+  };
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) => {
+      // The box question only exists when a screenshot does.
+      if (!body.questions.target_point) {
+        return Buffer.from(
+          JSON.stringify({
+            answers: { operation: answer(body.questions.operation.criteria, 'TAP') },
+          }),
+        );
+      }
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP'),
+            tap_target: answer(body.questions.tap_target.criteria, '1', 0.96),
+            target_point: { type: 'box', box: { left: 0.1, top: 0.78, right: 0.6, bottom: 0.88 } },
+          },
+        }),
+      );
+    },
+  });
+  const decision = await policy.decide({
+    goal: 'Go to 重庆市',
+    observation,
+    image: 'AAAA',
+  });
+  assert.equal(decision.action.elementId, 'ui.9');
+  assert.equal(decision.boxFallback.reason, 'label `1 of 2 in ViewGroup` says where, not what');
+  assert.equal(decision.boxFallback.chose, '重庆市 1470公里');
+});
+
+test('a low-confidence named pick also follows the box', async () => {
+  const observation = observe();
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) =>
+      Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'TAP'),
+            tap_target: answer(body.questions.tap_target.criteria, '2', 0.5),
+            target_point: { type: 'box', box: { left: 0.05, top: 0.05, right: 0.4, bottom: 0.2 } },
+          },
+        }),
+      ),
+  });
+  const decision = await policy.decide({
+    goal: 'Open the search field',
+    observation,
+    image: 'AAAA',
+  });
+  // The box lands on the search field (ui.0), not on the row the unsure choice named (ui.1).
+  assert.equal(decision.action.elementId, 'ui.0');
+  assert.equal(decision.boxFallback.reason, 'choice was unsure');
 });

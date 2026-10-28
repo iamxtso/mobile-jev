@@ -1,6 +1,19 @@
+// The status bar and the dock are system chrome, and their controls are named only by position
+// (`3 of 7 in FrameLayout`, `- -`). A model told to open a settings page picked one of them instead of
+// the menu item it was looking at, so chrome stops being a tap target once an app owns the screen. On
+// the launcher the dock is the app switcher, so there chrome stays tappable, and `OPEN_APP` and `HOME`
+// cover the two actions that chrome would otherwise offer.
+const isChrome = (node) => (node.resourceId || '').startsWith('com.android.systemui:');
+// The reported package is the reliable half of this: on this ROM the tree itself sometimes comes back as
+// the dock alone while the app owns the screen, and trusting the tree there would leave chrome tappable
+// exactly when the model is looking for a menu it cannot see.
+const chromeIsNoise = (observation) => !/launcher|systemui/i.test(observation.phone.packageName);
+
 export function candidatesFor(observation, texts = []) {
   const actions = {};
+  const quietChrome = chromeIsNoise(observation);
   for (const node of observation.elements) {
+    if (quietChrome && isChrome(node)) continue;
     // An element with no text and no description is an icon: the model cannot tell one ui.2.0 from
     // another, so offering it as a choice invites a guess. TAP_POINT reaches it by geometry instead,
     // which is what a person does with an unlabelled icon.
@@ -78,7 +91,7 @@ export function describeAction(action, observation) {
       return `Focus text input: ${target.hint || target.label || target.text || 'empty input field'}.`;
     const labels = observation.elements
       .filter((e) => e.id === action.elementId || e.id.startsWith(action.elementId + '.'))
-      .flatMap((e) => [e.text, e.label])
+      .flatMap((e) => [e.text, e.label, e.nested])
       .filter(Boolean);
     return `Tap ${[...new Set(labels)].join(' / ') || action.elementId}.`;
   }
@@ -90,7 +103,11 @@ export function describeAction(action, observation) {
       .filter((e) => e.id === action.elementId || e.id.startsWith(action.elementId + '.'))
       .flatMap((e) => [e.text, e.label])
       .filter(Boolean);
-    const name = [...new Set(labels)].join(' / ') || target?.resourceId || action.elementId;
+    const name =
+      [...new Set(labels)].join(' / ') ||
+      target?.resourceId ||
+      action.elementId ||
+      `the screen at (${action.x}, ${action.y})`;
     if (action.type === 'long-press') return `Press and hold ${name}.`;
     if (action.type === 'double-tap') return `Double tap ${name}.`;
     return `Drag ${name} ${action.direction.toLowerCase()}.`;

@@ -1,7 +1,10 @@
 import { test } from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { summarizeState } from './device.mjs';
 import { candidatesFor, runAgent } from './agent.mjs';
+import { encodePng } from './pixels.mjs';
 test('nested identical scroll regions produce one candidate per direction', () => {
   const observation = summarizeState(state(), 'phone');
   const scroll = {
@@ -119,6 +122,238 @@ test('preview does not mutate a device; unchanged repeated action stops the loop
   assert.equal(calls.length, 1);
 });
 
+test('a tap whose only evidence is pixels is not counted as a stall', async () => {
+  const glyph = (lit) =>
+    encodePng({
+      width: 200,
+      height: 300,
+      paint: (x, y) =>
+        lit && x >= 20 && x < 60 && y >= 120 && y < 160 ? [250, 250, 250] : [20, 20, 20],
+    });
+  const run = async (screens, { helperJpeg = false } = {}) => {
+    const calls = [];
+    const device = {
+      assertReady: async () => {},
+      observe: async () => summarizeState(state(), 'phone'),
+      act: async () => {
+        calls.push(true);
+        return {};
+      },
+      screenshot: async () => screens(Math.min(calls.length, 1)),
+    };
+    // The helper's own screenshot is a JPEG; a pixel comparison has to skip it and ask for a PNG.
+    if (helperJpeg) device.snapshotImage = '/9j/4AAQSkZJRgABAQAAAQ==';
+    const policy = {
+      decide: async () => ({
+        status: 'action',
+        action: { type: 'tap-element', elementId: 'ui.0' },
+      }),
+    };
+    const result = await runAgent({
+      device,
+      policy,
+      goal: 'Pause the music',
+      execute: true,
+      maxSteps: 3,
+      settleMs: 0,
+      settleTimeoutMs: 0,
+    });
+    return { result, actions: calls.length };
+  };
+  // The glyph under the tap swaps while the tree stays identical: the tap worked, and the run says
+  // so instead of calling the screen dead — but it does not repeat a toggle it cannot confirm.
+  const swapped = await run((step) => glyph(step === 1));
+  assert.equal(swapped.result.status, 'stuck');
+  assert.match(swapped.result.decision.reason, /changed 16% of the control's pixels/);
+  assert.equal(swapped.actions, 1);
+  // Identical screenshots stay a dead screen: the repeat guard fires on the second identical step.
+  const identical = await run(() => glyph(false));
+  assert.equal(identical.result.status, 'stuck');
+  // A dead screen still stops the run, and now says so: the reason used to be empty, which read the same
+  // as "no reason recorded".
+  assert.match(identical.result.decision.reason, /repeated the same action on target/);
+  assert.equal(identical.actions, 1);
+  // A JPEG from the helper is not evidence either way: the PNG path answers instead.
+  const fromJpeg = await run((step) => glyph(step === 1), { helperJpeg: true });
+  assert.match(fromJpeg.result.decision.reason, /changed 16% of the control's pixels/);
+});
+
+test('a control that redrew and reads as the goal met confirms the tap', async () => {
+  const glyph = (lit) =>
+    encodePng({
+      width: 200,
+      height: 300,
+      paint: (x, y) =>
+        lit && x >= 20 && x < 60 && y >= 120 && y < 160 ? [250, 250, 250] : [20, 20, 20],
+    });
+  const run = async (read, decide) => {
+    const calls = [];
+    const device = {
+      assertReady: async () => {},
+      observe: async () => summarizeState(state(), 'phone'),
+      act: async () => {
+        calls.push(true);
+        return {};
+      },
+      screenshot: async () => glyph(calls.length >= 1),
+    };
+    const seen = [];
+    const policy = {
+      decide:
+        decide ??
+        (async () => ({ status: 'action', action: { type: 'tap-element', elementId: 'ui.0' } })),
+      readsControlChange: async (request) => {
+        seen.push(request);
+        return read;
+      },
+    };
+    const result = await runAgent({
+      device,
+      policy,
+      goal: 'Pause the music',
+      execute: true,
+      maxSteps: 3,
+      settleMs: 0,
+      settleTimeoutMs: 0,
+    });
+    return { result, actions: calls.length, seen };
+  };
+  // Both crops are of the same control, and the answer is enough to finish: repeating a confirmed
+  // toggle would undo it, so the run stops with the evidence instead of tapping again.
+  const confirmed = await run({ change: 'changed', confidence: 0.99, satisfied: 0.97 });
+  assert.equal(confirmed.result.status, 'done');
+  assert.equal(confirmed.actions, 1);
+  assert.match(confirmed.result.decision.reason, /shows the goal met \(97%\)/);
+  assert.equal(confirmed.seen.length, 1);
+  assert.ok(confirmed.seen[0].before && confirmed.seen[0].after, 'both crops are sent');
+  // The drawing changed but does not read as the goal: the tap worked and the result is unknown, so
+  // the run stops without claiming either.
+  const unproven = await run({ change: 'changed', confidence: 0.99, satisfied: 0.2 });
+  assert.equal(unproven.result.status, 'stuck');
+  assert.match(unproven.result.decision.reason, /changed 16% of the control's pixels/);
+  // Nothing changed under the tap: no confirmation, and the same stop.
+  const untouched = await run({ change: 'same', confidence: 0.99, satisfied: 0.05 });
+  assert.equal(untouched.result.status, 'stuck');
+  // Below the confidence the answer needs, an unconfirmed tap stays unconfirmed.
+  const unsure = await run({ change: 'changed', confidence: 0.6, satisfied: 0.95 });
+  assert.equal(unsure.result.status, 'stuck');
+  // A DONE that the screen cannot confirm is upgraded only by that same reading.
+  let taps = 0;
+  const doneAfterTap = async () =>
+    taps++ === 0
+      ? { status: 'action', action: { type: 'tap-element', elementId: 'ui.0' } }
+      : { status: 'done_unverified', reason: 'goal not visible (38%)' };
+  const upgraded = await run(
+    { change: 'changed', confidence: 0.99, satisfied: 0.96 },
+    doneAfterTap,
+  );
+  assert.equal(upgraded.result.status, 'done');
+  assert.match(upgraded.result.decision.reason, /reads as the goal being met \(96%\)/);
+  // The same tap with a weaker goal reading leaves the model's claim unverified.
+  taps = 0;
+  const unprovenDone = await run(
+    { change: 'changed', confidence: 0.99, satisfied: 0.7 },
+    doneAfterTap,
+  );
+  assert.equal(unprovenDone.result.status, 'done_unverified');
+});
+
+// A home screen moves on its own: the launcher rotates its voice tips every 7-9 s. A tap has to be
+// judged by the control it hit, or every tap on such a screen looks like progress.
+const homeScreen = ({ row = 'Pause', tips = '“接电话”', dialog = false, above = false } = {}) => ({
+  device_context: { screen_bounds: { width: 200, height: 400 } },
+  phone_state: { packageName: 'home', currentApp: 'home/.MainActivity' },
+  a11y_tree: {
+    children: [
+      ...(above
+        ? [{ text: 'weather', boundsInScreen: { left: 0, top: 0, right: 200, bottom: 60 } }]
+        : []),
+      ...(row
+        ? [
+            {
+              text: row,
+              isClickable: true,
+              isEnabled: true,
+              boundsInScreen: { left: 10, top: 100, right: 110, bottom: 200 },
+            },
+          ]
+        : []),
+      { text: tips, boundsInScreen: { left: 10, top: 300, right: 190, bottom: 330 } },
+      ...(dialog
+        ? [
+            {
+              text: 'OK',
+              isClickable: true,
+              isEnabled: true,
+              boundsInScreen: { left: 10, top: 200, right: 190, bottom: 260 },
+            },
+          ]
+        : []),
+    ],
+  },
+});
+
+// The change a single tap is credited with, as the run reported it.
+const creditedChange = async (before, after) => {
+  const readings = [before, after];
+  let reads = 0;
+  const seen = [];
+  const device = {
+    assertReady: async () => {},
+    observe: async () => summarizeState(readings[Math.min(reads++, readings.length - 1)], 'phone'),
+    act: async () => ({}),
+  };
+  await runAgent({
+    device,
+    policy: {
+      decide: async () => ({
+        status: 'action',
+        action: { type: 'tap-element', elementId: 'ui.0' },
+      }),
+    },
+    goal: 'Pause the music',
+    execute: true,
+    maxSteps: 1,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+    onObservation: ({ screenChanged }) => seen.push(screenChanged),
+  });
+  return seen[0];
+};
+
+test('a tap is judged by the control it hit, not by churn around it', async () => {
+  // The rotating tips card changes; the tapped control does not.
+  assert.equal(await creditedChange(homeScreen(), homeScreen({ tips: '“音量最小”' })), false);
+  assert.equal(await creditedChange(homeScreen(), homeScreen()), false);
+  // The control itself answers, disappears, or the tap opens something.
+  assert.equal(await creditedChange(homeScreen(), homeScreen({ row: 'Playing' })), true);
+  assert.equal(await creditedChange(homeScreen(), homeScreen({ row: null })), true);
+  assert.equal(await creditedChange(homeScreen(), homeScreen({ dialog: true })), true);
+  // A node appearing above the control renames every path id below it. Still not the tap's doing.
+  assert.equal(await creditedChange(homeScreen(), homeScreen({ above: true })), false);
+});
+
+test('a typed action reports which text tier carried it', async () => {
+  const fixture = fakeDevice();
+  fixture.device.act = async () => ({ inputTier: 'clipboard' });
+  const events = [];
+  const policy = {
+    decide: async () => ({ status: 'action', action: { type: 'type', text: '重庆', clear: true } }),
+  };
+  await runAgent({
+    device: fixture.device,
+    policy,
+    goal: 'Search for 重庆',
+    execute: true,
+    maxSteps: 1,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+    onAction: (event) => events.push(event),
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].inputTier, 'clipboard');
+});
+
 test('agent checks completion after the final allowed action and never exceeds budget', async () => {
   for (const complete of [true, false]) {
     const fixture = fakeDevice();
@@ -176,12 +411,8 @@ test('a tap that changes the screen resets the stall counter', async () => {
   const { device } = fakeDevice();
   let step = 0;
   let screens = 0;
-  // The screen changes after every tap, so the run is allowed to keep going.
-  device.observe = async () => {
-    const observation = summarizeState(state(), 'phone');
-    observation.fingerprint = `screen-${screens++}`;
-    return observation;
-  };
+  // The tapped row restates its value on every read, so each tap visibly does something.
+  device.observe = async () => summarizeState(state({ label: `Settings ${screens++}` }), 'phone');
   const policy = {
     decide: async () => {
       step++;
@@ -261,4 +492,336 @@ test('the same operation that cannot make progress three times stops the run', a
   assert.equal(result.status, 'stuck');
   assert.match(result.decision.reason, /3 × HOME/);
   assert.equal(calls.length, 12);
+});
+
+test('a long press that changes nothing is tried again, held longer', async () => {
+  const calls = [];
+  const raw = state();
+  const device = {
+    assertReady: async () => {},
+    observe: async () => summarizeState(raw, 'phone'),
+    act: async (action) => {
+      calls.push(action);
+      return {};
+    },
+  };
+  const policy = {
+    decide: async () => ({
+      status: 'action',
+      operation: 'LONG_PRESS',
+      action: { type: 'long-press', elementId: 'ui.0' },
+      confidence: 0.95,
+    }),
+  };
+  await runAgent({
+    device,
+    policy,
+    goal: 'Leave screen cleaning mode',
+    execute: true,
+    maxSteps: 1,
+  });
+  // 600 ms first, then the same control at 3 s: a screen locked behind a three-second hold releases
+  // for nobody who presses for 600 ms, and the policy has no way to ask for a duration.
+  assert.equal(calls[0].duration, undefined);
+  assert.equal(calls[1].duration, 3000);
+  assert.equal(calls[1].elementId, 'ui.0');
+  // A press that already carries a duration is taken as it is.
+  calls.length = 0;
+  await runAgent({
+    device: {
+      ...device,
+      act: async (action) => {
+        calls.push(action);
+        return {};
+      },
+    },
+    policy: {
+      decide: async () => ({
+        status: 'action',
+        operation: 'LONG_PRESS',
+        action: { type: 'long-press', elementId: 'ui.0', duration: 1200 },
+        confidence: 0.95,
+      }),
+    },
+    goal: 'Leave screen cleaning mode',
+    execute: true,
+    maxSteps: 1,
+  });
+  assert.deepEqual(
+    calls.map((call) => call.duration),
+    [1200],
+  );
+});
+
+test('a run that would wait forever on a dead network opens the settings app once', async () => {
+  const { device, calls } = fakeDevice();
+  const offline = { internet: false, wifiOn: false, saved: 3 };
+  device.observe = async () => ({
+    ...summarizeState(state(), 'phone'),
+    network: offline,
+  });
+  device.listApps = async () => [
+    { packageName: 'com.sgmw.navi', label: 'Navi' },
+    { packageName: 'com.sgmw.systemsettings', label: 'Systemsettings' },
+  ];
+  device.act = async (action) => {
+    calls.push(action);
+    return {};
+  };
+  const actions = [];
+  const policy = {
+    decide: async () => ({ status: 'action', operation: 'WAIT', action: { type: 'wait' } }),
+  };
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'search for a place',
+    execute: true,
+    maxSteps: 8,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+    waitTimeoutMs: 60_000,
+    onAction: (event) => actions.push(event),
+  });
+  // The recovery happens once, then the run reports the cause instead of burning the step budget.
+  assert.equal(actions.filter((event) => event.operation === 'RECOVER_NETWORK').length, 1);
+  assert.equal(
+    calls.filter((action) => action.type === 'open-app').at(-1).packageName,
+    'com.sgmw.systemsettings',
+  );
+  assert.equal(result.status, 'blocked');
+  assert.match(result.decision.reason, /cannot reach the internet/);
+});
+
+test('the network recovery walks the settings menu until the network page arrives', async () => {
+  process.env.NETWORK_MEMO_PATH = join(tmpdir(), `network-memo-walk-${process.pid}.json`);
+  const { device, calls } = fakeDevice();
+  const offline = { internet: false, wifiOn: false, saved: 2 };
+  const menu = [
+    { text: 'Bluetooth', clickable: true },
+    { text: 'Network', clickable: true },
+  ].map((node, index) => ({
+    ...summarizeState(state(), 'phone').elements[0],
+    id: `ui.${index}`,
+    text: node.text,
+    label: '',
+    resourceId: `com.example.settings:id/row${index}`,
+    clickable: true,
+    bounds: { left: 0, top: 100 + index * 100, right: 200, bottom: 180 + index * 100 },
+  }));
+  let onNetworkPage = false;
+  device.observe = async () => ({
+    ...summarizeState(state(), 'phone'),
+    network: offline,
+    elements: menu,
+  });
+  device.observeDirect = async () => device.observe();
+  device.screenshot = async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+  device.listApps = async () => [{ packageName: 'com.example.settings', label: 'Settings' }];
+  device.act = async (action) => {
+    calls.push(action);
+    if (action.type === 'tap-element' && action.elementId === 'ui.1') onNetworkPage = true;
+    return {};
+  };
+  const asked = [];
+  const policy = {
+    decide: async () => ({ status: 'action', operation: 'WAIT', action: { type: 'wait' } }),
+    confirmsNetworkScreen: async () => {
+      asked.push('here');
+      return onNetworkPage ? 0.99 : 0.01;
+    },
+  };
+  const actions = [];
+  await runAgent({
+    device,
+    policy,
+    goal: 'search for a place',
+    execute: true,
+    maxSteps: 6,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+    waitTimeoutMs: 60_000,
+    onAction: (event) => actions.push(event),
+  });
+  // Walked past the wrong row, stopped on the right one, and asked the page question at each stop.
+  assert.deepEqual(
+    actions
+      .filter((event) => event.operation === 'RECOVER_NETWORK' && event.label.startsWith('Open'))
+      .map((event) => event.label),
+    // `Network` is tried first because the wording matched; the walk still confirmed the page before
+    // stopping there, and `Bluetooth` was never touched.
+    ['Open Settings to restore the network', 'Open Network'],
+  );
+  assert.ok(asked.length >= 2);
+  delete process.env.NETWORK_MEMO_PATH;
+});
+
+test('the network recovery remembers the entry, so the next run skips the walk', async () => {
+  const memo = join(tmpdir(), `network-memo-${process.pid}-${Date.now()}.json`);
+  process.env.NETWORK_MEMO_PATH = memo;
+  try {
+    const walk = async () => {
+      const { device, calls } = fakeDevice();
+      const offline = { internet: false, wifiOn: false, saved: 2 };
+      // No wording the hint list knows: only the walk can find it, and only the memo can skip it.
+      const rows = ['Bluetooth', '无线局域网', 'Display'].map((text, index) => ({
+        ...summarizeState(state(), 'phone').elements[0],
+        id: `ui.${index}`,
+        text,
+        label: '',
+        resourceId: `com.example.settings:id/row${index}`,
+        clickable: true,
+        bounds: { left: 0, top: 100 + index * 100, right: 200, bottom: 180 + index * 100 },
+      }));
+      let onNetworkPage = false;
+      device.observe = async () => ({
+        ...summarizeState(state(), 'phone'),
+        network: offline,
+        elements: rows,
+      });
+      device.observeDirect = async () => device.observe();
+      device.screenshot = async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+      device.listApps = async () => [{ packageName: 'com.example.settings', label: 'Settings' }];
+      device.act = async (action) => {
+        calls.push(action);
+        if (action.type === 'tap-element' && action.elementId === 'ui.1') onNetworkPage = true;
+        return {};
+      };
+      const policy = {
+        decide: async () => ({ status: 'action', operation: 'WAIT', action: { type: 'wait' } }),
+        confirmsNetworkScreen: async () => (onNetworkPage ? 0.99 : 0.01),
+      };
+      const actions = [];
+      await runAgent({
+        device,
+        policy,
+        goal: 'search for a place',
+        execute: true,
+        maxSteps: 6,
+        settleMs: 0,
+        settleTimeoutMs: 0,
+        waitTimeoutMs: 60_000,
+        onAction: (event) => actions.push(event),
+      });
+      return actions
+        .filter((event) => event.operation === 'RECOVER_NETWORK' && event.label.startsWith('Open'))
+        .map((event) => event.label);
+    };
+    const first = await walk();
+    assert.deepEqual(first, ['Open Settings to restore the network', 'Open 无线局域网']);
+    const second = await walk();
+    // The remembered row is tried before the others this time.
+    assert.deepEqual(second, ['Open Settings to restore the network', 'Open 无线局域网']);
+  } finally {
+    delete process.env.NETWORK_MEMO_PATH;
+  }
+});
+
+test('the run goes back to the app it left once the network returns', async () => {
+  process.env.NETWORK_MEMO_PATH = join(tmpdir(), `network-memo-return-${process.pid}.json`);
+  const { device, calls } = fakeDevice();
+  let online = false;
+  let inSettings = false;
+  const base = () => summarizeState(state(), 'phone');
+  device.listApps = async () => [
+    { packageName: 'com.example.settings', label: 'Settings' },
+    { packageName: 'com.example.navi', label: 'Navi' },
+  ];
+  device.observe = async () => {
+    const summary = base();
+    return {
+      ...summary,
+      network: { internet: online, wifiOn: online, saved: 3 },
+      phone: inSettings ? { ...summary.phone, packageName: 'com.example.settings' } : summary.phone,
+    };
+  };
+  device.observeDirect = async () => device.observe();
+  device.screenshot = async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+  device.act = async (action) => {
+    calls.push(action);
+    if (action.type === 'open-app' && /settings/.test(action.packageName)) inSettings = true;
+    if (action.type === 'open-app' && /navi/.test(action.packageName)) inSettings = false;
+    if (action.type === 'tap-element' || action.type === 'tap-point') online = true;
+    return {};
+  };
+  let openedNavi = false;
+  const policy = {
+    decide: async ({ coach }) => {
+      // The model only knows it was handed back if the coach says so.
+      if (coach && /in front again/.test(coach)) return { status: 'done', reason: 'back in Navi' };
+      // The run starts in the keyboard-free launcher (`home`), which cannot be launched on its own, so the
+      // return target comes from the last app the run opened.
+      if (!openedNavi) {
+        openedNavi = true;
+        return {
+          status: 'action',
+          operation: 'OPEN_APP',
+          action: { type: 'open-app', packageName: 'com.example.navi', appLabel: 'Navi' },
+        };
+      }
+      return { status: 'action', operation: 'WAIT', action: { type: 'wait' } };
+    },
+    confirmsNetworkScreen: async () => (online ? 0.99 : 0.01),
+  };
+  const actions = [];
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'search for a place',
+    execute: true,
+    maxSteps: 8,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+    waitTimeoutMs: 60_000,
+    onAction: (event) => actions.push(event),
+  });
+  const recovery = actions.filter((event) => event.operation === 'RECOVER_NETWORK');
+  // Whatever the walk did, the last thing recovery does is hand the app back: the launcher `home` cannot be
+  // launched, so it is the app the run opened before the detour.
+  assert.equal(recovery.at(-1).label, 'Return to Navi');
+  assert.equal(recovery.at(-2).label.startsWith('Open'), true);
+  assert.equal(result.status, 'done');
+});
+
+test('a repeated tap that changes nothing says why the run stopped', async () => {
+  const { device } = fakeDevice();
+  // One clickable control, and a screenshot that never changes: the repeat cannot be confirmed.
+  const button = {
+    ...summarizeState(state(), 'phone').elements[0],
+    id: 'ui.0',
+    text: '重庆',
+    label: '',
+    resourceId: 'com.example.navi:id/result0',
+    clickable: true,
+    bounds: { left: 100, top: 100, right: 300, bottom: 200 },
+  };
+  device.observe = async () => ({
+    ...summarizeState(state(), 'phone'),
+    network: { internet: true, wifiOn: true, saved: 1 },
+    elements: [button],
+  });
+  device.screenshot = async () => encodePng(20, 8, (x, y) => [x * 3, y * 5, 40, 255]);
+  device.act = async () => ({});
+  const policy = {
+    decide: async () => ({
+      status: 'action',
+      operation: 'TAP',
+      confidence: 0.9,
+      target: '1',
+      action: { type: 'tap-element', elementId: 'ui.0' },
+      label: 'Tap 重庆.',
+    }),
+  };
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'search for a place',
+    execute: true,
+    maxSteps: 8,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+    waitTimeoutMs: 60_000,
+  });
+  assert.equal(result.status, 'stuck');
+  assert.match(result.decision.reason, /repeated TAP on Tap 重庆\./);
 });

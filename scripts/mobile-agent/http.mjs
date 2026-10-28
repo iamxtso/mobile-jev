@@ -49,6 +49,9 @@ function requestOnce({ url, apiKey, method = 'GET', body, timeoutMs = 30_000 }, 
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
+          // Images are off by default and the API refuses a request that carries one without this
+          // acknowledgement. Only a request that really sends an image opts in.
+          ...(body?.assets ? { 'TypeSafe-Danger-Zone-Images': 'true' } : {}),
           ...(payload ? { 'Content-Length': payload.length } : {}),
         },
       },

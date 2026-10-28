@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createAgentDevice, deviceConfig } from './device-factory.mjs';
+import { lastState } from './device.mjs';
 import { TypeSafePolicy, runAgent } from './agent.mjs';
 import { pooledRequest, decodeJson } from './http.mjs';
 import { measuredRequest, summarizeMetrics } from './metrics.mjs';
@@ -27,6 +28,8 @@ Commands:
 
 Options:
   --adb-serial SERIAL            ADB device serial; or ADB_SERIAL
+  --helper-port PORT             Pin the helper tunnel's host port; or HELPER_PORT. Needed when the adb
+                                 server runs on another machine, so that port can be forwarded back
   --out PATH                     Save observe JSON or screenshot PNG
   --snapshot PATH                Original observe JSON for tap-element
   --text VALUE                   Repeatable exact text candidates for TypeSafe
@@ -41,9 +44,11 @@ Keys: ADB_SERIAL; TYPESAFE_API_KEY for run.
 Direct commands execute immediately. Run sends goal and UI text to TypeSafe.
 `;
 
+// Overwrite: writing a fresh observation or screenshot to the path already in the shell history is the
+// normal case, and an exclusive create rejects it.
 async function save(path, data) {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, data, { flag: 'wx', mode: 0o600 });
+  await writeFile(path, data, { mode: 0o600 });
 }
 
 async function main() {
@@ -52,6 +57,7 @@ async function main() {
     options: {
       help: { type: 'boolean', short: 'h' },
       'adb-serial': { type: 'string' },
+      'helper-port': { type: 'string' },
       out: { type: 'string' },
       snapshot: { type: 'string' },
       clear: { type: 'boolean' },
@@ -76,6 +82,7 @@ async function main() {
   };
   const config = deviceConfig(process.env, {
     adbSerial: values['adb-serial'],
+    helperPort: values['helper-port'],
   });
   const device = createAgentDevice(config);
   if (command === 'profile') {
@@ -113,7 +120,9 @@ async function main() {
     let trace;
     if (values.trace) {
       await mkdir(dirname(values.trace), { recursive: true });
-      trace = await open(values.trace, 'wx', 0o600);
+      // Overwrite: a re-run into the same path is how a fix gets re-checked, and an exclusive create
+      // rejects the second run instead of replacing the file.
+      trace = await open(values.trace, 'w', 0o600);
     }
     const record = async (event) => {
       if (trace)
@@ -176,7 +185,12 @@ async function main() {
       });
       if (!['done', 'preview'].includes(result.status)) process.exitCode = 2;
     } catch (error) {
-      await record({ event: 'error', message: error.message });
+      // A run that dies mid-way still has to say what it left on the device. Read the screen once more
+      // rather than reusing the copy the failed step was working from, and if even that read fails, say
+      // so instead of implying the screen is unchanged.
+      const last = await lastState(device);
+      await record({ event: 'error', message: error.message, last });
+      print({ event: 'error', message: error.message, last });
       throw error;
     } finally {
       await trace?.close();
