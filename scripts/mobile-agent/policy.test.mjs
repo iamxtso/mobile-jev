@@ -248,7 +248,11 @@ test('a point tap survives a screen that redraws elsewhere, but not a different 
   // A point that draws nothing in either read is still actionable: a dock glyph has no node at all.
   const blind = { type: 'tap', x: 500, y: 500 };
   assert.doesNotThrow(() => assertFresh(after, before, blind));
-  after.elements.push(node('ui.10', 'Something arrived', { bounds: { left: 400, top: 400, right: 600, bottom: 600 } }));
+  after.elements.push(
+    node('ui.10', 'Something arrived', {
+      bounds: { left: 400, top: 400, right: 600, bottom: 600 },
+    }),
+  );
   assert.throws(() => assertFresh(after, before, blind), StaleObservationError);
 });
 
