@@ -160,31 +160,55 @@ export class HelperClient {
         // Right after an install the service is not resolvable yet; the enable step below waits.
         await new Promise((resolve) => setTimeout(resolve, this.settleMs));
       }
-      const enabled = await this.adb([
-        'shell',
-        'settings',
-        'get',
-        'secure',
-        'enabled_accessibility_services',
-      ]);
-      const current = enabled.trim();
-      const services = current === 'null' || !current ? [] : current.split(':');
-      if (!services.includes(SERVICE_NAME)) {
-        // Start from whatever else is enabled: turning the helper on must not turn others off.
-        await this.adb([
-          'shell',
-          'settings',
-          'put',
-          'secure',
-          'enabled_accessibility_services',
-          [...services, SERVICE_NAME].join(':'),
-        ]);
-        await this.adb(['shell', 'settings', 'put', 'secure', 'accessibility_enabled', '1']);
-        await new Promise((resolve) => setTimeout(resolve, this.settleMs));
-      }
+      await this.enableService();
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Bring a helper back that settings say is enabled but that answers nothing.
+   *
+   * This ROM leaves the APK's process alive after it unbinds the accessibility service: the setting reads
+   * as enabled, the helper's port is closed, and every read silently falls back to the ten-second adb
+   * dump. Restarting the process and re-enabling the service is the only thing that clears it, so the
+   * device calls this once per run, after the snapshot path has already failed.
+   */
+  async repair() {
+    try {
+      await this.adb(['shell', 'am', 'force-stop', PACKAGE_NAME]).catch(() => '');
+      await this.detach();
+      await new Promise((resolve) => setTimeout(resolve, this.settleMs));
+      await this.enableService();
+      return await this.ping();
+    } catch {
+      return false;
+    }
+  }
+
+  async enableService() {
+    const enabled = await this.adb([
+      'shell',
+      'settings',
+      'get',
+      'secure',
+      'enabled_accessibility_services',
+    ]);
+    const current = enabled.trim();
+    const services = current === 'null' || !current ? [] : current.split(':');
+    if (!services.includes(SERVICE_NAME)) {
+      // Start from whatever else is enabled: turning the helper on must not turn others off.
+      await this.adb([
+        'shell',
+        'settings',
+        'put',
+        'secure',
+        'enabled_accessibility_services',
+        [...services, SERVICE_NAME].join(':'),
+      ]);
+      await this.adb(['shell', 'settings', 'put', 'secure', 'accessibility_enabled', '1']);
+      await new Promise((resolve) => setTimeout(resolve, this.settleMs));
     }
   }
 

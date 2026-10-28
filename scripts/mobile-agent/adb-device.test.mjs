@@ -339,10 +339,16 @@ test('ADB stale observations are rejected before any mutation', async () => {
   const { device, calls } = fakeAdb();
   await device.assertReady();
   const expected = screen();
-  device.observe = async () => ({ ...expected, fingerprint: 'changed' });
+  // A point tap is judged by the control under the point, so a stale read is one where that control now
+  // shows something else. `10, 10` is the root container, which a tap at the search field's own centre
+  // is not: the smallest control under the point is the field.
+  const changed = structuredClone(expected);
+  changed.fingerprint = 'changed';
+  changed.elements.find((element) => element.resourceId?.endsWith(':id/search')).text = 'Purchase';
+  device.observe = async () => changed;
   calls.length = 0;
   await assert.rejects(
-    device.act({ type: 'tap', x: 10, y: 10 }, { expected }),
+    device.act({ type: 'tap', x: 50, y: 140 }, { expected }),
     StaleObservationError,
   );
   assert.equal(calls.length, 0);

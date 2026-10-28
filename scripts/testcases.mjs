@@ -44,6 +44,7 @@ Options:
   --run                 Run the selected cases
   --summary             Write ${OUT}/summary.md from the results so far
   --group TEXT          Only cases whose group contains TEXT (repeatable)
+  --file PREFIX         Only cases from one sheet, by id prefix: f01 … f12 (repeatable)
   --only IDS            Comma-separated case ids
   --limit N             Stop after N cases
   --steps N             Actions per case (default 15)
@@ -186,6 +187,7 @@ async function main() {
       run: { type: 'boolean' },
       summary: { type: 'boolean' },
       group: { type: 'string', multiple: true, default: [] },
+      file: { type: 'string', multiple: true, default: [] },
       only: { type: 'string' },
       limit: { type: 'string' },
       steps: { type: 'string', default: '15' },
@@ -221,8 +223,10 @@ async function main() {
   const done = values.resume ? new Set((await previousRuns()).map((entry) => entry.id)) : new Set();
   const only = values.only ? new Set(values.only.split(',').map((id) => id.trim())) : null;
   const groups = values.group ?? [];
+  const files = values.file ?? [];
   const selected = all
     .filter((testCase) => !only || only.has(testCase.id))
+    .filter((testCase) => !files.length || files.includes(testCase.id.split('-')[0]))
     .filter((testCase) => !groups.length || groups.some((group) => testCase.group.includes(group)))
     .filter((testCase) => !done.has(testCase.id))
     .slice(0, values.limit ? Number(values.limit) : undefined);

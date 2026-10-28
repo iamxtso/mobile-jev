@@ -113,13 +113,22 @@ export function assertFresh(current, expected, action, maxAgeMs = 30_000) {
     // voice-tips card every few seconds, so the fingerprint of an idle home screen differs between two
     // reads and expired every point tap decided on one: three stale retries ended the run.
     const atPoint = (state) =>
-      state.elements.find(
-        ({ bounds }) =>
-          bounds.left <= action.x &&
-          action.x < bounds.right &&
-          bounds.top <= action.y &&
-          action.y < bounds.bottom,
-      );
+      state.elements
+        .filter(
+          ({ bounds }) =>
+            bounds.left <= action.x &&
+            action.x < bounds.right &&
+            bounds.top <= action.y &&
+            action.y < bounds.bottom,
+        )
+        // The smallest control containing the point is the one a person would say they tapped; a
+        // container and its child share the point, and only the child says whether the tap still means
+        // the same thing.
+        .sort(
+          (a, b) =>
+            (a.bounds.right - a.bounds.left) * (a.bounds.bottom - a.bounds.top) -
+            (b.bounds.right - b.bounds.left) * (b.bounds.bottom - b.bounds.top),
+        )[0];
     const drawn = (node) =>
       node
         ? JSON.stringify([node.bounds, node.text, node.label, node.resourceId, node.checked])
@@ -860,6 +869,14 @@ export class AdbDevice {
         // reaches idle state and one read took 36 s, so the tree is used as it comes.
         if (snapshot) return this.observationFromSnapshot(snapshot);
         await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
+      }
+      // A helper the system reports as enabled can still answer nothing: this ROM leaves its process
+      // alive after unbinding the service. Restart it once per run rather than read every screen through
+      // the ten-second adb dump for the rest of the night.
+      if (!this.helperRepaired && (await this.helper.repair())) {
+        this.helperRepaired = true;
+        const snapshot = await this.helper.snapshot();
+        if (snapshot) return this.observationFromSnapshot(snapshot);
       }
     }
     this.snapshotImage = null;

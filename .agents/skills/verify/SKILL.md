@@ -32,6 +32,19 @@ Ready means `HTTP 200` from `http://127.0.0.1:3999/`, which the helper polls for
 
 Configuration comes from `.env.local`, then `.env`, with exported variables winning: `ADB_SERIAL`, `TYPESAFE_API_KEY`, `TYPESAFE_MODEL`, `STUDIO_PORT`, `HELPER_PORT`. Never print `.env.local` — it holds the API key.
 
+### When the device is a remote devpod
+
+On this checkout the phone hangs off an adb server on another machine, reached through an SSH tunnel
+(`ssh -f -N -L5037:127.0.0.1:5037 -L27183:127.0.0.1:27183 devpod5`). Two consequences:
+
+- `adb forward` creates its listener on that remote machine, so the helper tunnel is only reachable
+  through the same tunnel. `HELPER_PORT=27183` is set in `.env.local` for that reason, and it must match
+  the `-L` forward. Without it every read falls back to the ten-second `uiautomator` dump.
+- `adb kill-server` kills the remote server through the tunnel and there is nothing local to restart it.
+  Recover with `ssh devpod5 'adb start-server'`, then check `adb devices -l` before driving anything.
+  A helper whose accessibility service the ROM unbound shows up as `ping` failing on its port; the agent
+  restarts it once per run (see `HelperClient.repair`).
+
 ## Doctor
 
 `pnpm run doctor` is the read-only "is this instance worth driving?" check. It prints one line per check and exits 1 if any fails:
