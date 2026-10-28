@@ -12,7 +12,7 @@
  * `artifacts/testcases/results.jsonl`, so an interrupted night still has every verdict it reached.
  */
 import { parseArgs } from 'node:util';
-import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -112,8 +112,11 @@ async function runCase({ testCase, device, policy, steps, settleMs, serial }) {
   await writeEvidence(testCase.id, 'before.json', JSON.stringify(before, null, 2));
   if (beforeImage) await writeEvidence(testCase.id, 'before.png', beforeImage);
 
-  const trace = [];
-  const record = async (event) => trace.push({ at: new Date().toISOString(), ...event });
+  // Written as the case runs, so a case that hangs still says what it was doing.
+  await mkdir(join(OUT, testCase.id), { recursive: true });
+  const traceFile = await open(join(OUT, testCase.id, 'trace.jsonl'), 'w');
+  const record = async (event) =>
+    traceFile.write(`${JSON.stringify({ at: new Date().toISOString(), ...event })}\n`);
   let result;
   let error;
   try {
@@ -134,8 +137,9 @@ async function runCase({ testCase, device, policy, steps, settleMs, serial }) {
     });
   } catch (caught) {
     error = caught.message;
+  } finally {
+    await traceFile.close();
   }
-  await writeEvidence(testCase.id, 'trace.jsonl', trace.map((e) => JSON.stringify(e)).join('\n'));
 
   const after = await device.observe().catch((caught) => {
     error ??= `The final screen could not be read: ${caught.message}`;
