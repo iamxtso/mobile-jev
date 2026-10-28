@@ -399,3 +399,28 @@ nor the pixels changed…`. The sentence exposed the next defect instead of hidi
   With typing unblocked the box fallback reached the device: `tc26-box4` step 2 chose the row and logged
   `boxFallback {reason: "label `(none)` says where, not what", chose: "第2个;第2条"}`, the 重庆市 result. The
   run then died on a lost remote adb connection, not on a decision.
+
+## The 10-28 sheets: what the car unit cost per case
+
+`pnpm testcases` runs one row of a QA sheet as a goal and judges the final screen on its own, so the
+numbers below are wall time on `282999b1` rather than on an emulator.
+
+- **A point tap expired on a screen that redraws itself.** The freshness gate hashed the whole tree, and
+  the launcher rotates its voice-tips card every 7-9 s, so a tap decided on one read was stale by the
+  next. Three stale retries ended the run: `f07-2` spent 64 s of model and read time to report
+  `unstable_screen` with nothing tapped. A point tap is now judged by the smallest control under the
+  point, with the whole-tree hash kept for a point that draws nothing, and the same case reached the
+  personal-center screen.
+- **A helper that settings call enabled can be dead.** This ROM leaves `com.artemis.helper`'s process
+  alive after it unbinds the accessibility service: `enabled_accessibility_services` lists it, its port
+  is closed, and every read falls through to `uiautomator dump`, which is the ten-second path. A run
+  cannot tell: it just gets slow. `pnpm agent observe` took 33.4 s and 31.7 s per read while that was
+  true. `HelperClient.repair()` now restarts the process and re-enables the service once per run, after
+  the snapshot path has already failed, and a read costs 6.3 s end to end (helper snapshot alone:
+  0.65-1.07 s over five reads).
+- **The device here is a remote devpod.** The adb server runs on another machine behind an SSH tunnel
+  that forwards 5037 and, for the helper, 27183. `adb forward` therefore listens on the far side, and
+  `HELPER_PORT=27183` is what keeps the helper reachable from this checkout; without it every read pays
+  for the adb dump. `adb kill-server` killed the server on the other side of the tunnel and left nothing
+  local to restart, which reads as `protocol fault (couldn't read status)` on every later command:
+  `ssh devpod5 'adb start-server'` is the recovery.
