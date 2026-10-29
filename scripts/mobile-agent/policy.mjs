@@ -17,6 +17,13 @@ const MIN_GOAL_VISIBLE = 0.8;
 // screen. Below this confidence the policy asks what the step would commit before running it.
 const COMMITTING = new Set(['TAP', 'TAP_POINT', 'TYPE_TEXT', 'ENTER']);
 const MIN_CONFIDENCE_COMMITTING = 0.75;
+// A dialog that must be answered before an app can be used (consent, privacy, permission, update) reads
+// to the model as the goal reached: the first-run notice says `欢迎使用主题商店`, which is the theme
+// store, so it chose DONE and the run ended in front of an `同意并继续` button. One question, asked only
+// on a DONE, needs this much certainty that a control still stands between this screen and the goal.
+const MIN_BLOCKER_CONFIDENCE = 0.9;
+// A dialog loops if the tap does not dismiss it, and a run must not spend itself on one screen.
+const MAX_BLOCKER_TAPS = 2;
 const MIN_COMMIT_PROBABILITY = 0.5;
 // A stop gate and a wait are not retries, so a stall never recovers into them.
 const NON_RECOVERABLE = new Set(['DONE', 'BLOCKED', 'WAIT']);
@@ -468,6 +475,46 @@ export class TypeSafePolicy {
       }),
     );
     return { probability: response?.answers?.commit?.noul, usage: response?.usage };
+  }
+
+  /**
+   * Is a control standing between this screen and the goal, such as a consent notice, a permission
+   * request, an update prompt or a login wall? Asked only when the model has just chosen DONE, because
+   * that is when a dialog is mistaken for the destination and the run ends in front of it.
+   */
+  async blockingDialog({ goal, image, criteria }) {
+    const response = decodeJson(
+      await this.request({
+        url: this.apiUrl,
+        apiKey: this.apiKey,
+        method: 'POST',
+        body: {
+          model: this.model,
+          state: {
+            goal,
+            screen: 'screenshot',
+            next: 'Answer about the screen: is the app covered by a dialog that must be answered?',
+          },
+          questions: {
+            blocker: {
+              type: 'choice',
+              // Asked about the screen, not about the goal. Asked about the goal, Jev answered NONE
+              // at 0.97 on a first-run notice titled `欢迎使用主题商店`: opening the store was the goal,
+              // and to it the store was open.
+              instructions:
+                'Look at `screen`. A dialog can cover an app and take the whole screen before the app is usable: a privacy or consent notice with a button such as `同意并继续`, `同意` or `接受`, a permission request, an update prompt, a login wall. When such a dialog covers the app, choose the control that accepts or continues it. Choose NONE only when no dialog covers the app and the screen is the app or page itself.',
+              criteria: {
+                ...criteria,
+                NONE: 'Nothing has to be answered before the goal can be reached.',
+              },
+            },
+          },
+          assets: { screenshot: { type: 'image', format: 'png', data_base64: image } },
+        },
+      }),
+    );
+    const answer = response?.answers?.blocker;
+    return { choice: answer?.choice, confidence: answer?.confidence, usage: response?.usage };
   }
 
   /**
@@ -941,6 +988,35 @@ Does \`screen\` show network settings — a switch that turns Wi-Fi on or off, o
         status = 'uncertain';
       }
     }
+    // A dialog that must be answered before the app can be used is a step, not the end of the goal. The
+    // model reads `欢迎使用主题商店` as the theme store and chooses DONE; on the sheet's own cases that
+    // ended every 主题商店 and 应用商店 run in front of `同意并继续`. One extra question, only on a DONE,
+    // asks whether a control still stands between this screen and the goal, and a confident answer is
+    // tapped instead of ending the run.
+    let blocker;
+    let finalLabel = label;
+    const dismissed = history.filter((entry) => entry.blocker).length;
+    // Both DONE outcomes ask: a dialog the model mistook for the goal reads as `done`, and the same
+    // dialog usually reads as `done_unverified` when the notice does not name the goal. Either way the
+    // run used to end in front of `同意并继续`.
+    if (
+      (status === 'done' || status === 'done_unverified') &&
+      image &&
+      dismissed < MAX_BLOCKER_TAPS
+    ) {
+      const criteria = space.questions.tap_target?.criteria;
+      if (criteria) {
+        const check = await this.blockingDialog({ goal, image, criteria });
+        const picked = check.choice === 'NONE' ? undefined : space.tap[check.choice];
+        if (picked && check.confidence >= MIN_BLOCKER_CONFIDENCE) {
+          operation = 'TAP';
+          status = 'action';
+          selected = picked;
+          finalLabel = describeAction(picked.action, observation);
+          blocker = { choice: check.choice, confidence: check.confidence };
+        }
+      }
+    }
     return {
       status,
       operation,
@@ -986,10 +1062,11 @@ Does \`screen\` show network settings — a switch that turns Wi-Fi on or off, o
               : 'Provide the intended field value with --text if it is not present verbatim in the goal.',
           }
         : {}),
+      ...(blocker ? { blocker } : {}),
       ...(status === 'action'
         ? {
             action: selected.action,
-            label,
+            label: finalLabel,
           }
         : {}),
     };
