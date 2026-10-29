@@ -33,6 +33,15 @@ The model's status and the screen's verdict are recorded separately, and `verdic
 | `fail`           | neither                                                      |
 | `error`          | the run or the read died (device, transport)                 |
 
+The screenshot is the evidence. The model's claim is neither evidence for a pass nor against one: a
+`done_unverified` run is not a pass by itself, and it is not a failure by itself either. That is why
+`pass_unclaimed` exists.
+
+An expectation with more than one line often carries a branch that means "nothing changed", such as
+`显示桌面首页 / 仍显示在桌面首页`. One question over the whole cell is then satisfied by any screen, so
+such a case can be counted as passed without anything happening. Compare the before and after
+screenshots for those, and ask whether the change the case describes took place.
+
 ## Evidence
 
 `artifacts/testcases/<id>/` holds `before.png`, `before.json`, `trace.jsonl`, `after.png`, `after.json`, `run.json`. `artifacts/testcases/results.jsonl` gets one line per case and `summary.md` is rebuilt from it, worst first. Nothing here is committed.
