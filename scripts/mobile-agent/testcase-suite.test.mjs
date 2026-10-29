@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   casesFromRows,
+  expectationPreexists,
   goalFor,
   oneLinePerCase,
   summaryMarkdown,
@@ -90,6 +91,18 @@ test('a run that reached the screen without claiming it still counts as reached'
   assert.equal(verdictOf({ status: 'done', judgment: { verified: false } }), 'claimed_only');
   assert.equal(verdictOf({ status: 'step_limit', judgment: { verified: false } }), 'fail');
   assert.equal(verdictOf({ status: 'error', error: 'adb gone' }), 'error');
+});
+
+test('a case whose expectation already held at the start is not evidence', () => {
+  const multi = { expected: ['显示桌面首页', '仍显示在桌面首页'] };
+  const single = { expected: ['桌面处于编辑状态'] };
+  assert.equal(verdictOf({ status: 'done', judgment: { verified: true } }), 'pass');
+  assert.equal(
+    verdictOf({ status: 'done', judgment: { verified: true }, beforeVerified: true }),
+    'unjudgeable',
+  );
+  assert.equal(expectationPreexists({ testCase: multi, judgment: { verified: true } }), true);
+  assert.equal(expectationPreexists({ testCase: single, judgment: { verified: true } }), false);
 });
 
 test('a case with two lines is read once, as the line written last', () => {
