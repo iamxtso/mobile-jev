@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { casesFromRows, goalFor, summaryMarkdown, verdictOf } from './testcase-suite.mjs';
+import {
+  casesFromRows,
+  goalFor,
+  oneLinePerCase,
+  summaryMarkdown,
+  verdictOf,
+} from './testcase-suite.mjs';
 import { columnIndex, decodeEntities, sheetRows, sharedStringText } from './xlsx.mjs';
 
 const HEADER = [
@@ -84,6 +90,18 @@ test('a run that reached the screen without claiming it still counts as reached'
   assert.equal(verdictOf({ status: 'done', judgment: { verified: false } }), 'claimed_only');
   assert.equal(verdictOf({ status: 'step_limit', judgment: { verified: false } }), 'fail');
   assert.equal(verdictOf({ status: 'error', error: 'adb gone' }), 'error');
+});
+
+test('a case with two lines is read once, as the line written last', () => {
+  const lines = [
+    { id: 'f01-2', verdict: 'fail' },
+    { id: 'f01-3', verdict: 'pass' },
+    { id: 'f01-2', verdict: 'pass_unclaimed' },
+  ];
+  assert.deepEqual(
+    oneLinePerCase(lines).map((entry) => `${entry.id} ${entry.verdict}`),
+    ['f01-2 pass_unclaimed', 'f01-3 pass'],
+  );
 });
 
 test('the summary counts verdicts and puts failures first', () => {

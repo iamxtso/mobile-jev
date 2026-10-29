@@ -124,6 +124,19 @@ export function verdictOf({ status, judgment, error }) {
   return 'fail';
 }
 
+/**
+ * One line per case, keeping the last one written.
+ *
+ * Two runners on one device each append their own verdict, and a reader that takes them all says a case
+ * was run twice. The file is rewritten on every record, so this also cleans a file an earlier run left
+ * with duplicates.
+ */
+export function oneLinePerCase(entries) {
+  const last = new Map();
+  for (const entry of entries) if (entry?.id) last.set(entry.id, entry);
+  return [...last.values()];
+}
+
 /** One line per case for the morning summary, worst first. */
 export function summaryMarkdown(runs) {
   const order = { error: 0, fail: 1, claimed_only: 2, pass_unclaimed: 3, pass: 4 };
