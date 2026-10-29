@@ -283,6 +283,14 @@ export async function runAgent({
     typeof device.listApps === 'function' ? device.listApps() : Promise.resolve([]),
   ]);
   let observation = initialObservation;
+  // The launcher's app list holds tiles that are not packages (`QQ音乐`, `酷我音乐`, `喜马拉雅`), and a goal
+  // naming one had nothing to open. They are read once per run, and offered beside the packages.
+  if (typeof device.learnTiles === 'function') {
+    const tiles = await device.learnTiles({ observation }).catch(() => null);
+    for (const tile of tiles ?? [])
+      installedApps.push({ packageName: `tile:${tile.label}`, label: tile.label, tile: true });
+    if (tiles?.length) observation = await observe();
+  }
   const finish = (status, decision) => ({
     status,
     steps: history.length,
