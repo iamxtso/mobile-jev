@@ -24,7 +24,18 @@ export function candidatesFor(observation, texts = []) {
     // `checkable` while leaving `clickable` false, so 无线网络 was never offered as a target and the model
     // pressed the only rows that were (Apple CarPlay, ICCOA Carlink) while the network stayed down.
     if (node.enabled && (node.clickable || node.editable || node.checkable) && named) {
-      actions[`tap_${node.id}`] = { type: 'tap-element', elementId: node.id };
+      // A search box is a clickable container around the field, and tapping the container's right side
+      // lands on the magnifier: measured on the QQ音乐 search page, that tap left the field unfocused, the
+      // paste went nowhere, and the Enter that followed did nothing. The field is what a person taps.
+      const field = observation.elements.find(
+        (child) =>
+          child.id.startsWith(`${node.id}.`) &&
+          child.editable &&
+          child.enabled &&
+          !child.checked &&
+          (child.text || child.label || ''),
+      );
+      actions[`tap_${node.id}`] = { type: 'tap-element', elementId: field ? field.id : node.id };
     }
   }
   actions.back = { type: 'global', name: 'back' };
