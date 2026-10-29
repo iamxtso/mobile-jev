@@ -8,6 +8,9 @@ import { clearField, enterText } from './text-entry.mjs';
 
 export const GLOBAL_ACTIONS = { back: 1, home: 2, recent: 3 };
 export const KEYS = { back: 4, tab: 61, enter: 66, delete: 67, forward_delete: 112 };
+// The system's own windows: the dock, the status bar, the launcher. A tree made only of these while an
+// app owns the screen is a read of the wrong window.
+const CHROME_PACKAGES = /^(com\.android\.systemui|com\.sgmw\.launcher)$/i;
 // A drag moves the chosen element by a share of the screen, far enough to reorder a row or throw a
 // card away, and short enough to stay on screen.
 const DRAG_VECTORS = { LEFT: [-0.35, 0], RIGHT: [0.35, 0], UP: [0, -0.3], DOWN: [0, 0.3] };
@@ -181,7 +184,9 @@ async function resolveAction(device, action, { expected, maxAgeMs }, dispatch, i
     case 'tap-element': {
       if (!expected) throw new Error('Element taps require their original observation.');
       const node = current.elements.find((entry) => entry.id === action.elementId);
-      if (!node?.enabled || !(node.clickable || node.editable))
+      // A checkable control answers a tap even when this ROM forgets to mark it clickable: that is what a
+      // person does with a switch, and the settings page here reports both its switches that way.
+      if (!node?.enabled || !(node.clickable || node.editable || node.checkable))
         throw new Error('Element is not actionable.');
       resolved = { type: 'tap', ...aim(node) };
       break;
@@ -856,24 +861,50 @@ export class AdbDevice {
     }
   }
 
+  /**
+   * Is the helper's tree the chrome layer while an app owns the screen? `mCurrentFocus` names the window
+   * the user is in; a chrome-only tree that disagrees with it is a read of the wrong window, and the
+   * caller reads the app's own window instead.
+   */
+  async chromeHidesApp(packageName) {
+    if (!CHROME_PACKAGES.test(packageName || '')) return false;
+    const output = await this.run(['shell', 'dumpsys', 'window']).catch(() => null);
+    if (!output) return false;
+    const focus = output.toString('utf8').match(/mCurrentFocus=[^\n]*?\s([A-Za-z0-9._]+)\//);
+    return Boolean(focus && focus[1] !== packageName && !CHROME_PACKAGES.test(focus[1]));
+  }
+
   async readObservation() {
     // One request for the tree and the image, when the helper is there; about 20 times faster than
     // an adb dump, and the image comes from the same instant as the tree.
     if (this.helper) {
       // The helper is the reliable path: one request, no UiAutomation contention, no dump file. A
       // momentary miss is worth repeating before falling back to the slower, fussier adb read.
+      let chromeOnly = false;
       for (let attempt = 0; (await this.helper.available()) && attempt < 3; attempt++) {
         const snapshot = await this.helper.snapshot();
-        // A tree that is only the dock and status bar is what the helper sometimes returns while an
-        // app owns the screen. The adb read is not a fix: with a live clock on that ROM the dump never
-        // reaches idle state and one read took 36 s, so the tree is used as it comes.
-        if (snapshot) return this.observationFromSnapshot(snapshot);
+        // A tree that is only the dock and status bar is what the helper sometimes returns while an app
+        // owns the screen. Reading the adb way costs several seconds, but being wrong about which app is
+        // in front costs the run: on the settings 连接 page the helper reported `com.android.systemui`
+        // with the dock's nodes, and the model then pressed a row of the page it had been told was not
+        // there. One `dumpsys window` decides, and the app's own tree is the one worth reading.
+        if (snapshot) {
+          // The helper's own `package` is empty on this ROM, so the tree decides what it read, and a
+          // chrome-only tree agrees with itself. `mCurrentFocus` is the only oracle for the window the
+          // user is in, and it is what says whether this read can be believed.
+          const observation = this.observationFromSnapshot(snapshot);
+          if (!(await this.chromeHidesApp(observation.phone.packageName))) return observation;
+          chromeOnly = true;
+          break;
+        }
         await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
       }
       // A helper the system reports as enabled can still answer nothing: this ROM leaves its process
       // alive after unbinding the service. Restart it once per run rather than read every screen through
       // the ten-second adb dump for the rest of the night.
-      if (!this.helperRepaired && (await this.helper.repair())) {
+      // A working helper that read the wrong window is not a helper to repair: repairing would take the
+      // same chrome-only snapshot again and hand it back.
+      if (!chromeOnly && !this.helperRepaired && (await this.helper.repair())) {
         this.helperRepaired = true;
         const snapshot = await this.helper.snapshot();
         if (snapshot) return this.observationFromSnapshot(snapshot);
