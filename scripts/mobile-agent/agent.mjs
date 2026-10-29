@@ -446,7 +446,14 @@ export async function runAgent({
           executedMs: 0,
         });
         await wait(1200);
-        observation = await observe();
+        // Read the settings menu the slow way. The helper follows the window with accessibility focus,
+        // which on this car is the dock overlay while settings owns the screen, so a fast read here
+        // returns the launcher: every row then looks like the wrong page, the walk rejects all of them,
+        // and the network stays down (measured: the model tapped dock coordinates at y=977 afterwards).
+        observation =
+          typeof device.observeDirect === 'function'
+            ? await device.observeDirect()
+            : await observe();
         const verdict = await arrives();
         if (verdict === undefined) return false;
         if (verdict) {
@@ -528,7 +535,13 @@ export async function runAgent({
         });
       // A network the device could rejoin is not a dead end. Say that once, drop the option, and let the
       // model find the settings app, rather than ending a goal the device can still be brought to do.
-      if (decision.status === 'blocked' && (await networkRecovery())) continue;
+      // The same applies when the model answered DONE and the screen refused it: on this car a media hub
+      // says `网络异常 / 点击重试`, which reads as neither done nor blocked, and the run used to end there.
+      if (
+        (decision.status === 'blocked' || decision.status === 'done_unverified') &&
+        (await networkRecovery())
+      )
+        continue;
       return finish(decision.status, decision);
     }
     if (!execute) return finish('preview', decision);

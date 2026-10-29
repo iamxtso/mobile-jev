@@ -721,7 +721,7 @@ Does \`screen\` show network settings — a switch that turns Wi-Fi on or off, o
       space.questions.operation.criteria.DRAG_POINT =
         'Drag from one point on screen to another, at coordinates you pick from `screen`. Use it for a slider, a handle or a drawn surface that is not in the element list. Use DRAG when the thing to move is an observed element.';
       space.questions.operation.criteria.BLOCKED =
-        'No offered operation can advance even one step toward the goal. Do not choose this merely because a field must first be opened or focused, or because a control is missing from the element list: TAP_POINT can still tap what is visible on screen.';
+        'No offered operation can advance even one step toward the goal. Do not choose this merely because a field must first be opened or focused, because a control is missing from the element list (TAP_POINT can still tap what is visible on screen), or because the app the goal names has no entry of its own: a service can live inside another app, such as a media hub or a store, so open the app list and explore what is there.';
       space.questions.target_point = {
         type: 'box',
         instructions:
