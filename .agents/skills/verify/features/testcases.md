@@ -25,22 +25,28 @@ Case ids are `<sheet>-<row>`: `f07-2` is the second sheet of the directory, row 
 
 The model's status and the screen's verdict are recorded separately, and `verdict` combines them:
 
-| verdict          | meaning                                                      |
-| ---------------- | ------------------------------------------------------------ |
-| `pass`           | the model said done and the screen shows the expected result |
-| `pass_unclaimed` | the screen shows it, the model ended some other way          |
-| `claimed_only`   | the model said done and the screen disagrees                 |
-| `fail`           | neither                                                      |
-| `error`          | the run or the read died (device, transport)                 |
+| verdict            | meaning                                                      |
+| ------------------ | ------------------------------------------------------------ |
+| `pass`             | the model said done and the screen shows the expected result |
+| `pass_unclaimed`   | the screen shows it, the model ended some other way          |
+| `claimed_only`     | the model said done and the screen disagrees                 |
+| `fail`             | neither                                                      |
+| `pass_preexisting` | the goal already held when the case started and still holds  |
+| `error`            | the run or the read died (device, transport)                 |
 
 The screenshot is the evidence. The model's claim is neither evidence for a pass nor against one: a
 `done_unverified` run is not a pass by itself, and it is not a failure by itself either. That is why
 `pass_unclaimed` exists.
 
+A goal that already held when the case started counts as met when it still holds at the end. `打开 Wi-Fi`
+with Wi-Fi already on is open Wi-Fi, and a run that leaves it off is the failure. Such a case is
+`pass_preexisting`, not `pass`, because it shows the goal holds, not that the agent caused the
+transition.
+
 An expectation with more than one line often carries a branch that means "nothing changed", such as
-`显示桌面首页 / 仍显示在桌面首页`. One question over the whole cell is then satisfied by any screen, so
-such a case can be counted as passed without anything happening. Compare the before and after
-screenshots for those, and ask whether the change the case describes took place.
+`显示桌面首页 / 仍显示在桌面首页`. One question over the whole cell is then satisfied by any screen.
+Asking the same question of the starting screenshot says whether that happened, and the verdict then
+separates "the goal holds" from "the agent caused it".
 
 ## Evidence
 

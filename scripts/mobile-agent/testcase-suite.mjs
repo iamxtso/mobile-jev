@@ -131,14 +131,16 @@ function apiUrl() {
 /**
  * The verdict for one case.
  *
- * `beforeVerified` is the same question asked of the screenshot taken before the steps ran. A case whose
- * expectation already held at the start cannot tell "the agent did it" from "it was always so", so its
- * ending screen is not evidence either way. That is where a cell like `显示桌面首页 / 仍显示在桌面首页`
- * would otherwise count a pass for doing nothing.
+ * A goal that already held before the steps ran and still holds after them is met: "打开 Wi-Fi" with Wi-Fi
+ * on is open Wi-Fi, and a task that breaks it is the failure. The transition is not claimed though, so
+ * such a case is `pass_preexisting`: it shows the goal holds, not that the agent caused it.
+ *
+ * `beforeVerified` is the same question asked of the starting screenshot. A case that already held and
+ * does not hold at the end is a failure: the run took a goal that was met and left it unmet.
  */
 export function verdictOf({ status, judgment, beforeVerified, error }) {
   if (error) return 'error';
-  if (beforeVerified) return 'unjudgeable';
+  if (beforeVerified) return judgment?.verified ? 'pass_preexisting' : 'fail';
   if (judgment?.verified) return status === 'done' ? 'pass' : 'pass_unclaimed';
   if (status === 'done') return 'claimed_only';
   return 'fail';
@@ -159,7 +161,14 @@ export function oneLinePerCase(entries) {
 
 /** One line per case for the morning summary, worst first. */
 export function summaryMarkdown(runs) {
-  const order = { error: 0, fail: 1, unjudgeable: 2, claimed_only: 3, pass_unclaimed: 4, pass: 5 };
+  const order = {
+    error: 0,
+    fail: 1,
+    claimed_only: 2,
+    pass_unclaimed: 3,
+    pass_preexisting: 4,
+    pass: 5,
+  };
   const sorted = [...runs].sort(
     (a, b) => (order[a.verdict] ?? 9) - (order[b.verdict] ?? 9) || a.id.localeCompare(b.id),
   );
