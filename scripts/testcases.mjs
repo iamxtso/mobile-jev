@@ -12,7 +12,7 @@
  * `artifacts/testcases/results.jsonl`, so an interrupted night still has every verdict it reached.
  */
 import { parseArgs } from 'node:util';
-import { appendFile, mkdir, open, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -27,6 +27,7 @@ import {
   goalFor,
   judgeExpected,
   summaryMarkdown,
+  oneLinePerCase,
   verdictOf,
 } from './mobile-agent/testcase-suite.mjs';
 
@@ -71,12 +72,45 @@ async function load(args) {
 async function previousRuns() {
   try {
     const text = await readFile(RESULTS, 'utf8');
-    return text
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
+    return oneLinePerCase(
+      text
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    );
   } catch {
     return [];
+  }
+}
+
+/**
+ * Write one case's verdict, replacing any line the same case already has.
+ *
+ * Append-only is what let two runners on one device leave two verdicts for one case: the reader then
+ * took whichever line came last, so a pass could silently become a fail. A lock file keeps two runners
+ * from rewriting the file at the same moment.
+ */
+async function recordResult(entry) {
+  const lock = `${RESULTS}.lock`;
+  await mkdir(OUT, { recursive: true });
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await writeFile(lock, String(process.pid), { flag: 'wx' });
+      break;
+    } catch (error) {
+      if (attempt > 100) throw new Error(`The results file stayed locked: ${error.message}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  try {
+    const runs = await previousRuns().catch(() => []);
+    const lines = [...runs.filter((run) => run.id !== entry.id), entry].map(
+      (run) => `${JSON.stringify(run)}\n`,
+    );
+    await writeFile(`${RESULTS}.tmp`, lines.join(''));
+    await rename(`${RESULTS}.tmp`, RESULTS);
+  } finally {
+    await unlink(lock).catch(() => {});
   }
 }
 
@@ -183,8 +217,7 @@ async function runCase({ testCase, device, policy, steps, settleMs, serial }) {
     ...(error ? { error } : {}),
   };
   await writeEvidence(testCase.id, 'run.json', `${JSON.stringify(entry, null, 2)}\n`);
-  await mkdir(OUT, { recursive: true });
-  await appendFile(RESULTS, `${JSON.stringify(entry)}\n`);
+  await recordResult(entry);
   return entry;
 }
 
@@ -216,8 +249,7 @@ async function main() {
     return;
   }
   if (values.summary) {
-    const runs = await previousRuns();
-    const unique = [...new Map(runs.map((entry) => [entry.id, entry])).values()];
+    const unique = await previousRuns();
     await writeFile(join(OUT, 'summary.md'), summaryMarkdown(unique));
     console.log(`${unique.length} cases summarised in ${OUT}/summary.md`);
     return;
@@ -271,17 +303,20 @@ async function main() {
       console.log(`${record.verdict} (${record.status}${percent})`);
     } catch (error) {
       console.log(`error (${error.message})`);
-      await appendFile(
-        RESULTS,
-        `${JSON.stringify({ id: testCase.id, group: testCase.group, name: testCase.name, status: 'error', verdict: 'error', error: error.message })}\n`,
-      );
+      await recordResult({
+        id: testCase.id,
+        group: testCase.group,
+        name: testCase.name,
+        status: 'error',
+        verdict: 'error',
+        error: error.message,
+      });
     }
     const minutes = ((Date.now() - started) / 60_000).toFixed(1);
     process.stdout.write(`    ${passed}/${index + 1} verified, ${minutes} min elapsed\n`);
   }
   if (!values['keep-open']) await device.act({ type: 'global', name: 'home' }).catch(() => {});
-  const runs = await previousRuns();
-  const unique = [...new Map(runs.map((entry) => [entry.id, entry])).values()];
+  const unique = await previousRuns();
   await writeFile(join(OUT, 'summary.md'), summaryMarkdown(unique));
   console.log(
     `\n${passed}/${selected.length} verified this pass; ${unique.length} results recorded.`,
