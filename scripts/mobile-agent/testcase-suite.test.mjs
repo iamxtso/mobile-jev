@@ -93,13 +93,18 @@ test('a run that reached the screen without claiming it still counts as reached'
   assert.equal(verdictOf({ status: 'error', error: 'adb gone' }), 'error');
 });
 
-test('a case whose expectation already held at the start is not evidence', () => {
+test('a goal that already held and still holds is met, without claiming the transition', () => {
   const multi = { expected: ['显示桌面首页', '仍显示在桌面首页'] };
   const single = { expected: ['桌面处于编辑状态'] };
   assert.equal(verdictOf({ status: 'done', judgment: { verified: true } }), 'pass');
   assert.equal(
     verdictOf({ status: 'done', judgment: { verified: true }, beforeVerified: true }),
-    'unjudgeable',
+    'pass_preexisting',
+  );
+  // Already true at the start and no longer true at the end: the run broke a goal that was met.
+  assert.equal(
+    verdictOf({ status: 'done', judgment: { verified: false }, beforeVerified: true }),
+    'fail',
   );
   assert.equal(expectationPreexists({ testCase: multi, judgment: { verified: true } }), true);
   assert.equal(expectationPreexists({ testCase: single, judgment: { verified: true } }), false);
