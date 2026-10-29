@@ -27,6 +27,7 @@ import {
   goalFor,
   judgeExpected,
   summaryMarkdown,
+  expectationPreexists,
   oneLinePerCase,
   verdictOf,
 } from './mobile-agent/testcase-suite.mjs';
@@ -200,7 +201,24 @@ async function runCase({ testCase, device, policy, steps, settleMs, serial }) {
     }).catch((caught) => ({ error: caught.message }));
   }
   const status = result?.status ?? (error ? 'error' : 'unknown');
-  const verdict = verdictOf({ status, judgment, error });
+  // A case with a "nothing changed" branch is only evidence if it was false when the case started.
+  let beforeVerified = false;
+  if (!error && beforeImage && testCase.expected.length > 1) {
+    const beforeJudgment = await judgeExpected({
+      request: pooledRequest,
+      apiKey: process.env.TYPESAFE_API_KEY,
+      model: process.env.TYPESAFE_MODEL,
+      image: beforeImage.toString('base64'),
+      testCase,
+    }).catch(() => null);
+    beforeVerified = expectationPreexists({ testCase, judgment: beforeJudgment });
+    await writeEvidence(
+      testCase.id,
+      'before-judgment.json',
+      `${JSON.stringify(beforeJudgment, null, 2)}\n`,
+    );
+  }
+  const verdict = verdictOf({ status, judgment, beforeVerified, error });
   const entry = {
     id: testCase.id,
     source: testCase.source,
@@ -211,6 +229,7 @@ async function runCase({ testCase, device, policy, steps, settleMs, serial }) {
     status,
     verdict,
     judgment: judgment && { probability: judgment.probability, verified: judgment.verified },
+    ...(testCase.expected.length > 1 ? { beforeVerified } : {}),
     reason: result?.reason,
     modelSteps: result?.steps,
     timings: result?.timings,

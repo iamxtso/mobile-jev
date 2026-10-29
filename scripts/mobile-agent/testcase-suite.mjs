@@ -63,6 +63,17 @@ export function goalFor(testCase) {
   return parts.join('\n');
 }
 
+/**
+ * Whether the expectation was already true before the steps ran.
+ *
+ * With more than one line the cell often offers a branch that means "nothing changed" beside the branch
+ * the case is about, and one question over the whole cell is then satisfied by any screen. The same
+ * question asked of the starting screenshot shows it: a case that starts out satisfied proves nothing.
+ */
+export function expectationPreexists({ testCase, judgment }) {
+  return testCase.expected.length > 1 && Boolean(judgment?.verified);
+}
+
 /** The result the sheet expects, as one paragraph for the judging question. */
 export function expectedFor(testCase) {
   return testCase.expected.join('\n') || testCase.name;
@@ -117,8 +128,17 @@ function apiUrl() {
  * What the evidence supports. The model's own status and the screen are reported separately, because
  * a run can reach the right state without recognising it, and can claim a state it never reached.
  */
-export function verdictOf({ status, judgment, error }) {
+/**
+ * The verdict for one case.
+ *
+ * `beforeVerified` is the same question asked of the screenshot taken before the steps ran. A case whose
+ * expectation already held at the start cannot tell "the agent did it" from "it was always so", so its
+ * ending screen is not evidence either way. That is where a cell like `显示桌面首页 / 仍显示在桌面首页`
+ * would otherwise count a pass for doing nothing.
+ */
+export function verdictOf({ status, judgment, beforeVerified, error }) {
   if (error) return 'error';
+  if (beforeVerified) return 'unjudgeable';
   if (judgment?.verified) return status === 'done' ? 'pass' : 'pass_unclaimed';
   if (status === 'done') return 'claimed_only';
   return 'fail';
@@ -139,7 +159,7 @@ export function oneLinePerCase(entries) {
 
 /** One line per case for the morning summary, worst first. */
 export function summaryMarkdown(runs) {
-  const order = { error: 0, fail: 1, claimed_only: 2, pass_unclaimed: 3, pass: 4 };
+  const order = { error: 0, fail: 1, unjudgeable: 2, claimed_only: 3, pass_unclaimed: 4, pass: 5 };
   const sorted = [...runs].sort(
     (a, b) => (order[a.verdict] ?? 9) - (order[b.verdict] ?? 9) || a.id.localeCompare(b.id),
   );
