@@ -628,9 +628,28 @@ test('without a screenshot the request stays text-only', () => {
   assert.equal(questions.operation.criteria.TAP_POINT, undefined);
 });
 
-const visionPolicy = (goalVisible, operation = 'DONE') =>
+const visionPolicy = (
+  goalVisible,
+  operation = 'DONE',
+  blocker = 'NONE',
+  blockerConfidence = 0.97,
+) =>
   new TypeSafePolicy({
     request: async ({ body }) => {
+      // The second request of a run: what still stands between this screen and the goal.
+      if (body.questions.blocker)
+        return Buffer.from(
+          JSON.stringify({
+            answers: {
+              blocker: {
+                type: 'choice',
+                choice: blocker,
+                confidence: blockerConfidence,
+                probabilities: {},
+              },
+            },
+          }),
+        );
       assert.equal(body.questions.goal_visible.type, 'noul');
       return Buffer.from(
         JSON.stringify({
@@ -679,12 +698,77 @@ test('DONE that the screen only half supports is reported, not accepted', async 
   }
 });
 
+test('a consent dialog on the DONE screen is tapped, not reported as the goal', async () => {
+  // 主题商店 opens on `欢迎使用主题商店` with `同意并继续`; the model read that as the store and chose DONE,
+  // and every 主题商店 and 应用商店 case ended there. The dialog is a step.
+  const decision = await visionPolicy(0.98, 'DONE', '1').decide({
+    goal: '进入壁纸商店',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.operation, 'TAP');
+  assert.equal(decision.action.type, 'tap-element');
+  assert.deepEqual(decision.blocker, { choice: '1', confidence: 0.97 });
+  assert.match(decision.label, /Search/);
+});
+
+test('a DONE the screen refuses still gets its blocker tapped', async () => {
+  // The same first-run notice reads as `done_unverified` when its text does not name the goal, and the
+  // run ended there too. Both outcomes ask the same question.
+  const decision = await visionPolicy(0.38, 'DONE', '1').decide({
+    goal: '进入壁纸商店',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.status, 'action');
+  assert.equal(decision.blocker.choice, '1');
+});
+
+test('an unsure blocker answer leaves the DONE alone', async () => {
+  const decision = await visionPolicy(0.98, 'DONE', '1', 0.6).decide({
+    goal: '进入壁纸商店',
+    observation: observe(),
+    image: 'AAAA',
+  });
+  assert.equal(decision.status, 'done');
+  assert.equal(decision.blocker, undefined);
+});
+
+test('after two dismissed dialogs the question is not asked again', async () => {
+  let calls = 0;
+  const policy = new TypeSafePolicy({
+    request: async ({ body }) => {
+      calls++;
+      assert.equal(body.questions.blocker, undefined, 'the blocker question must be skipped');
+      return Buffer.from(
+        JSON.stringify({
+          answers: {
+            operation: answer(body.questions.operation.criteria, 'DONE'),
+            goal_visible: { type: 'noul', noul: 0.98 },
+          },
+        }),
+      );
+    },
+  });
+  const decision = await policy.decide({
+    goal: '进入壁纸商店',
+    observation: observe(),
+    image: 'AAAA',
+    history: [{ blocker: { choice: '1' } }, { blocker: { choice: '1' } }],
+  });
+  assert.equal(calls, 1);
+  assert.equal(decision.status, 'done');
+});
+
 test('a model that answers no noul question keeps the old DONE behaviour', async () => {
   const policy = new TypeSafePolicy({
     request: async ({ body }) =>
       Buffer.from(
         JSON.stringify({
-          answers: { operation: answer(body.questions.operation.criteria, 'DONE') },
+          answers: body.questions.operation
+            ? { operation: answer(body.questions.operation.criteria, 'DONE') }
+            : {},
         }),
       ),
   });
