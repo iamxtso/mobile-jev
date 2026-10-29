@@ -424,3 +424,27 @@ numbers below are wall time on `282999b1` rather than on an emulator.
   for the adb dump. `adb kill-server` killed the server on the other side of the tunnel and left nothing
   local to restart, which reads as `protocol fault (couldn't read status)` on every later command:
   `ssh devpod5 'adb start-server'` is the recovery.
+
+## What the 10-28 sheets say to fix next
+
+321 cases, run one per goal on `282999b1`; 125 have a clean verdict so far
+(`artifacts/testcases/report.md`). Two failure classes are the agent's to fix, not the sheets':
+
+- **A first-run consent dialog is a step, not a destination.** 主题商店 and 应用商店 open on
+  `欢迎使用…` with `同意并继续`. The model read the welcome text as the goal and chose DONE at 76 %,
+  which the judging question refused (`claimed_only`). The button is a labeled clickable candidate, so
+  the capability is there and the choice is wrong: a DONE needs a check for a modal that still blocks
+  the app, or the goal needs to be phrased as the screen behind it.
+- **A four-screen permission flow needs the precondition run as its own goal.** `电话、语音麦克风权限都关闭`
+  means Settings → 应用 → 语音 → 权限 → `关闭 / 本次 / 三个月 / 一年` → back to the launcher → read the
+  status bar. The trace reaches the dialog and taps its close icon. Eight local decisions cannot carry
+  that plan, and the sheet's `前置条件` was never run as a step, which is a runner gap before it is a
+  policy gap.
+
+The other classes are environmental and belong in the case list, not the agent: 61 cases name apps this
+unit does not have (no QQ音乐, 酷我音乐, 喜马拉雅), and several need a state a person would set up first
+(music playing, a wireless charging pad, ignition signals).
+
+One harness lesson: the night's first batch loop was still running when a second was started, so 47
+cases ran with two agents on one screen. Those rows are excluded and were re-run. A batch should hold an
+exclusive lock on the device so a second start fails instead of racing.
