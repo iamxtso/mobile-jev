@@ -1095,34 +1095,43 @@ export class AdbDevice {
   }
 
   /**
-   * Open the launcher's app list: tap the dock cell that worked last time, or probe the dock's unlabelled
-   * cells once and remember the one that produced a grid of named tiles. Null when none of them does.
+   * Open the launcher's app list and return its tiles, or null when it cannot be reached.
+   *
+   * The list's entry is an unlabelled glyph in the dock, so its point is learned once per device: press
+   * HOME, read the home app's own window (a chrome-overlay read has no dock in it, and a settings page
+   * happily looks like a grid of tiles), probe the dock's unlabelled cells, and keep the one whose page is
+   * a grid of named tiles in the same package as home.
    */
-  async openAppList({ observation } = {}) {
-    const home = observation ?? (await this.observe());
+  async openAppList() {
+    const memo = rememberedAppListPoint(this.serial);
+    if (memo) {
+      await this.run(['shell', 'input', 'tap', String(memo.x), String(memo.y)], true);
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      const tiles = appListTiles(await this.observe(), { packageName: memo.packageName });
+      if (tiles) return tiles;
+    }
+    await this.run(['shell', 'input', 'keyevent', '3'], true).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const home =
+      typeof this.observeDirect === 'function' ? await this.observeDirect() : await this.observe();
     const homePackage = home.phone.packageName;
-    const remembered = rememberedAppListPoint(this.serial);
-    // The probe wants the dock, and the dock belongs to the system UI: a correct read of the launcher's own
-    // window does not contain it. Read the overlay tree when the app window has no dock cells in it.
+    // The dock lives in the system UI's overlay, so the app window's own tree usually has no cells to
+    // probe; read the overlay for them.
     let cells = probeCells(home);
     if (!cells.length && this.helper?.snapshot) {
       const overlay = await this.helper.snapshot().catch(() => null);
       if (overlay) cells = probeCells(this.observationFromSnapshot(overlay));
     }
-    const attempts = remembered
-      ? [{ point: remembered }]
-      : cells.map((cell) => ({
-          point: {
-            x: Math.round((cell.bounds.left + cell.bounds.right) / 2),
-            y: Math.round((cell.bounds.top + cell.bounds.bottom) / 2),
-          },
-        }));
-    for (const { point } of attempts) {
+    for (const cell of cells) {
+      const point = {
+        x: Math.round((cell.bounds.left + cell.bounds.right) / 2),
+        y: Math.round((cell.bounds.top + cell.bounds.bottom) / 2),
+      };
       await this.run(['shell', 'input', 'tap', String(point.x), String(point.y)], true);
       await new Promise((resolve) => setTimeout(resolve, 900));
       const tiles = appListTiles(await this.observe(), { packageName: homePackage });
       if (tiles) {
-        rememberAppListPoint(this.serial, point);
+        rememberAppListPoint(this.serial, { ...point, packageName: homePackage });
         return tiles;
       }
     }
@@ -1130,33 +1139,24 @@ export class AdbDevice {
   }
 
   /** The app list's tiles, read once per run, with the launcher put back where it was. */
-  async learnTiles({ observation } = {}) {
+  async learnTiles() {
     if (this.tiles) return this.tiles;
-    // The app list is the home app's other screen, so the probe has to start from the home app's own
-    // window: a run that begins inside a settings page would otherwise learn that page's sections as
-    // "apps". HOME first, then a read that is not the chrome overlay.
-    await this.run(['shell', 'input', 'keyevent', '3'], true).catch(() => {});
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    const before =
-      typeof this.observeDirect === 'function'
-        ? await this.observeDirect()
-        : (observation ?? (await this.observe()));
-    this.tiles = await this.openAppList({ observation: before });
+    // A probe reads the dock and then a page per cell; one pass can catch the list mid-animation.
+    this.tiles = (await this.openAppList()) ?? (await this.openAppList());
     await this.run(['shell', 'input', 'keyevent', '3'], true).catch(() => {});
     return this.tiles;
   }
 
-  /** Open one tile of the app list: the app list is opened first, then the cell is tapped. */
+  /** Open one tile of the app list: the list is opened first, then the cell is tapped by name. */
   async openTile(label) {
-    const home = await this.observe();
-    const packageName = home.phone.packageName;
-    let tiles = await this.openAppList({ observation: home });
+    let tiles = await this.openAppList();
     if (!tiles) throw new Error('The app list could not be opened.');
     let tile = tiles.find((entry) => entry.label === label);
     if (!tile) {
-      // A remembered dock point can land on the list a moment before it fills.
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      tiles = appListTiles(await this.observe(), { packageName }) ?? tiles;
+      // The list can still be filling when the first read lands.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const memo = rememberedAppListPoint(this.serial);
+      tiles = appListTiles(await this.observe(), { packageName: memo?.packageName }) ?? tiles;
       tile = tiles.find((entry) => entry.label === label);
     }
     if (!tile) throw new Error(`The app list has no ${label} tile.`);

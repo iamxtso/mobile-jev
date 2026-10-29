@@ -40,7 +40,12 @@ export function rememberedAppListPoint(serial) {
 export function rememberAppListPoint(serial, point) {
   if (!point) return;
   const all = readAll();
-  all[serial] = { x: Math.round(point.x), y: Math.round(point.y) };
+  all[serial] = {
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    // The package the list was found in, so a stale point on another app's page is not mistaken for it.
+    ...(point.packageName ? { packageName: point.packageName } : {}),
+  };
   try {
     mkdirSync(dirname(memoPath()), { recursive: true });
     writeFileSync(memoPath(), `${JSON.stringify(all, null, 2)}\n`);
