@@ -9,6 +9,7 @@ Each file covers one user-facing surface: what it is, how a user reaches it, how
 | Live studio                           | Web UI at `127.0.0.1:STUDIO_PORT`                       | yes for the snapshot stream | [studio.md](studio.md)                         |
 | Scripted verification suite           | CLI (`pnpm verify`, `pnpm demo`)                        | yes                         | [verification-suite.md](verification-suite.md) |
 | Manual test-case sheets               | CLI (`pnpm testcases`)                                  | yes                         | [testcases.md](testcases.md)                   |
+| Why the model missed a control        | Trace, `observe`, one decision probe                    | yes                         | [policy-triage.md](policy-triage.md)           |
 
 Readiness for all four comes from `pnpm run doctor` (see the Launch and Doctor sections of `../SKILL.md`).
 

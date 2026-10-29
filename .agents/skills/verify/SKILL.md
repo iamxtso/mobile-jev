@@ -11,6 +11,9 @@ The phone decides whether a run passed. A model `DONE` response is not proof (se
 
 Feature map: `features/README.md` next to this file. Read the file for the feature you are about to drive.
 
+When a run stalls or ends short while the control it needed was visible, stop guessing: `features/policy-triage.md`
+separates a bad question, a control that never became a candidate, and a read of the wrong window, with one check each.
+
 ## Launch
 
 No server is needed for the CLI. It talks to ADB directly.
