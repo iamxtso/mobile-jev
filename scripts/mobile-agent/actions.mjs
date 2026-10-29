@@ -20,7 +20,10 @@ export function candidatesFor(observation, texts = []) {
     const named = Boolean(
       (node.text || '').trim() || (node.description || '').trim() || (node.nested || '').trim(),
     );
-    if (node.enabled && (node.clickable || node.editable) && named) {
+    // A switch is actionable by definition. This ROM's settings page marks the Wi-Fi and hotspot switches
+    // `checkable` while leaving `clickable` false, so 无线网络 was never offered as a target and the model
+    // pressed the only rows that were (Apple CarPlay, ICCOA Carlink) while the network stayed down.
+    if (node.enabled && (node.clickable || node.editable || node.checkable) && named) {
       actions[`tap_${node.id}`] = { type: 'tap-element', elementId: node.id };
     }
   }
