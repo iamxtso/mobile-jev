@@ -13,7 +13,6 @@
     "build": "pnpm --filter @jev-mobile/studio build",
     "start": "pnpm --filter @jev-mobile/studio start",
     "agent": "node scripts/run.mjs",
-    "devices": "node scripts/run.mjs devices",
     "doctor": "node scripts/doctor.mjs",
     "demo": "node scripts/demo.mjs",
     "test": "node --test scripts/mobile-agent/*.test.mjs scripts/*.test.mjs apps/jev-studio/server/*.test.mjs",

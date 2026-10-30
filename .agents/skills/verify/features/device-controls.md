@@ -4,7 +4,6 @@ The CLI can read the phone and drive it without Jev. This is the debugging surfa
 
 ## Sub-features
 
-- **`devices`** — serials, names, states, as ADB reports them.
 - **`observe`** — compact UI state: every element with its bounds, label, and id, plus screen size. `--out PATH` saves the JSON.
 - **`screenshot`** — PNG to `--out` (default `artifacts/screen-<timestamp>.png`).
 - **`profile`** — times readiness plus five UI-state reads, without changing the device. `--out PATH` saves the report.
@@ -18,7 +17,7 @@ From a terminal, against the connected phone. Nothing in this surface is reachab
 ## Driving it with ADB + the agent CLI
 
 ```sh
-pnpm agent devices
+adb devices -l
 pnpm agent observe --out artifacts/verify/observe.json
 pnpm agent screenshot --out artifacts/verify/screen.png
 pnpm agent profile --out artifacts/verify/profile.json

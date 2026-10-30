@@ -13,7 +13,6 @@ const help = `Mobile Jev device harness (Node 22+, ADB)
 pnpm agent COMMAND [ARGS] [OPTIONS]
 
 Commands:
-  devices                        List device IDs, names, and states
   observe                        Print compact UI state and element IDs
   profile                        Time readiness and five UI-state reads without changing the device
   screenshot                     Save a PNG (--out PATH)

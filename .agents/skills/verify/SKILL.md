@@ -74,7 +74,7 @@ Always type `pnpm run doctor`. Bare `pnpm doctor` resolves to pnpm's own built-i
 ### CLI
 
 ```sh
-pnpm agent devices                                   # what ADB sees
+adb devices -l                                       # what ADB sees; the CLI only ever drives one serial
 pnpm agent observe --out artifacts/verify/observe.json
 pnpm agent screenshot --out artifacts/verify/before.png
 pnpm agent run "Turn on dark theme in Android Settings."                    # preview decision, no input
