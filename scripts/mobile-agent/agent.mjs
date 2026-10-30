@@ -341,8 +341,12 @@ export async function runAgent({
         label: `Open ${settingsApp.label} to restore the network`,
         executedMs: 0,
       });
-    } catch {
+    } catch (error) {
       // A stale read or an app that would not launch: the coach still tells the model what is wrong.
+      // An uncertain outcome may have landed, so never swallow it, like the loop's own dispatch.
+      if (error instanceof MutationUncertainError) {
+        throw error;
+      }
     }
     // The settings app opens on its own menu, so the page is right when either the app is in front or a
     // network word is on the screen; requiring 无线网络 alone rejected the menu the model should use.
@@ -419,7 +423,11 @@ export async function runAgent({
         if (guess)
           await device
             .act({ type: 'tap-element', elementId: guess.id }, { expected: observation })
-            .catch(() => {});
+            .catch((error) => {
+              if (error instanceof MutationUncertainError) {
+                throw error;
+              }
+            });
         return false;
       }
       if (already) return true;
@@ -443,7 +451,10 @@ export async function runAgent({
         if (!again) continue;
         try {
           await device.act({ type: 'tap-element', elementId: again.id }, { expected: observation });
-        } catch {
+        } catch (error) {
+          if (error instanceof MutationUncertainError) {
+            throw error;
+          }
           break;
         }
         await onAction({
@@ -608,7 +619,6 @@ export async function runAgent({
         networkWaits++;
         await wait(2500);
         observation = await observe();
-        repeated.clear();
         continue;
       }
       // One step can be reported twice while the screen catches up: this control center still listed a
