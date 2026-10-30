@@ -41,14 +41,19 @@ CONSTANTS Writers,        \* the runners that record verdicts, e.g. {"r1", "r2"}
 
 NoLock == "free"
 
-\* A ledger line the reader can use. A half-written line has no verdict: JSON.parse throws on it.
+\* A line the reader can use carries a verdict. `TornLine` is not a ledger line at all: an append-only
+\* run of an earlier version wrote half a line before it stopped, so `JSON.parse` throws on it and
+\* `previousRuns` catches, which is what `Parse` below describes. A line that parses but carries no
+\* verdict is dropped by the code and is not modeled here; see the skill's "what is verified" list.
 Whole(line) == "verdict" \in DOMAIN line
-TornLine == [id |-> "legacy"]
+TornLine == [half |-> "writ"]
 
 Lines(file) == {file[i] : i \in DOMAIN file}
 Ids(file) == {l.id : l \in {x \in Lines(file) : Whole(x)}}
 
-\* previousRuns(): one unreadable line and the whole read is "no results yet".
+\* previousRuns(): one line that is not JSON and the whole read is "no results yet". A line that parses
+\* but carries no verdict is dropped before `oneLinePerCase`, which is why `Whole` is about the verdict
+\* and not about the parse.
 Parse(file) == IF \A l \in Lines(file) : Whole(l) THEN file ELSE <<>>
 
 \* The states in which the code holds the lock file.
