@@ -3,7 +3,7 @@ name: action-safety
 description: Bounded exploration of the run loop's action safety in `scripts/mobile-agent/agent.mjs` — the freshness gate before input, the stale-only retry, the repeated-action guard, the longer-hold escalation and the step budget. Use when a change touches `runAgent`'s decide/act/read loop, `assertFresh`, `resolveAction` or `AdbDevice.run`, and before publishing a change to the way a decision becomes a tap, a hold or a key press; run it when a run tapped something twice, kept going after a dropped connection, or mutated past its step limit.
 ---
 
-<!-- sync-commit: 7aa9605 -->
+<!-- sync-commit: c29bacb -->
 
 # The run loop's action safety
 
@@ -153,7 +153,7 @@ Coverage record — this exploration describes these, and nothing else:
 | verified                                                                                                                              | at        |
 | ------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | `scripts/mobile-agent/agent.mjs`: `runAgent`'s loop, the stale retry, the repeated-action guard, the hold escalation, the step budget | `18a6746` |
-| `scripts/mobile-agent/device.mjs`: `assertFresh`, `resolveAction`'s gate, `AdbDevice.run`'s one-attempt mutation                      | `18a6746` |
+| `scripts/mobile-agent/device.mjs`: `assertFresh`, `resolveAction`'s gate, `AdbDevice.run`'s one-attempt mutation                      | `c29bacb` |
 | `scripts/mobile-agent/harness.test.mjs`: the recovery dispatches' uncertain-outcome rule, the Wi-Fi association wait's repeat guard   | `7aa9605` |
 
 `run.sh` reads the sync commit from the `<!-- sync-commit: -->` line above and lists every commit that
