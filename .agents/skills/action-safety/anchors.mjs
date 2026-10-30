@@ -39,11 +39,11 @@ const anchors = [
     id: 'the-gate-compares-the-target',
     file: 'device.mjs',
     about:
-      'a stale decision is one whose control, text or bounds moved, which is what the double redraws',
+      'a stale decision is one whose control or text moved, or whose target can no longer be told apart from the row that took its place',
     holds: (text) =>
       /\n\s+label,\n\s+resourceId,\n\s+editable,\n\s+enabled,\n\s+checked,\n\s+selected,\n/.test(
         text,
-      ),
+      ) && text.includes('!ambiguousMove(current, expected, action.elementId)'),
   },
   {
     id: 'open-app-skips-the-gate',
@@ -72,7 +72,7 @@ const anchors = [
     id: 'only-stale-continues',
     file: 'agent.mjs',
     about:
-      'the loop swallows exactly one kind of dispatch failure: a stale decision, refused before input',
+      "the loop's own dispatch swallows exactly one kind of failure: a stale decision, refused before input",
     holds: (text) =>
       text.includes(
         'if (!(error instanceof StaleObservationError)) throw error; // Never retry uncertain mutations.',
@@ -112,7 +112,7 @@ const anchors = [
     id: 'the-double-replaces-the-whole-act',
     file: 'device.mjs',
     about:
-      'one `act` is one resolution and one dispatch, which is what one `act` of the double answers',
+      'one `act` is one resolution and one dispatch, which is what the double answers; a double-tap sends two taps inside that one act and is not modelled',
     holds: (text) => text.includes('async act(action, context = {}) {\n    return resolveAction('),
   },
 ];

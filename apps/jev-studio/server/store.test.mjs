@@ -156,3 +156,31 @@ test('a task that ran out of steps is reported as such, not as needing attention
     assert.equal(store.get(run.id).status, expected, outcome);
   }
 });
+
+test('a task that floods stdout is stopped like any other and keeps holding the device', () => {
+  const { child, store } = fixture();
+  const signals = [];
+  child.kill = (signal) => signals.push(signal);
+  const run = store.start({ goal: 'Flood the protocol stream', maxSteps: 1 });
+  child.stdout.write('x'.repeat(1_000_001));
+  const flooded = store.get(run.id);
+  assert.equal(flooded.status, 'stopping');
+  assert.equal(flooded.error, 'Task output exceeded its limit.');
+  assert.deepEqual(signals, ['SIGTERM']);
+  assert.equal(store.get(run.id).endedAt, null);
+  assert.throws(() => store.start({ goal: 'Second task', maxSteps: 1 }), /already running/);
+  child.emit('close', 0);
+  assert.equal(store.get(run.id).status, 'stopped');
+});
+
+test('a result the task prints after the run ended does not rewrite it', () => {
+  const { child, store } = fixture();
+  const run = store.start({ goal: 'Report late', maxSteps: 1 });
+  child.emit('error', new Error('spawn failed'));
+  assert.equal(store.get(run.id).status, 'failed');
+  child.stdout.write(`${JSON.stringify({ type: 'result', outcome: 'done' })}\n`);
+  assert.equal(store.get(run.id).outcome, null);
+  child.emit('close', 0);
+  assert.equal(store.get(run.id).status, 'failed');
+  assert.equal(store.get(run.id).outcome, null);
+});

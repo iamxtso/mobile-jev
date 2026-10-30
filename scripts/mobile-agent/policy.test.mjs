@@ -234,6 +234,33 @@ test('target guards allow unrelated text updates and movement but reject changed
   );
 });
 
+test('a row that cannot be told apart from the one that took its place is refused', () => {
+  const before = observe();
+  // A list of identical actions: two rows read the same, so `targetMeaning` alone cannot tell them apart.
+  const row = { resourceId: 'com.example.notes:id/delete' };
+  before.elements.push(
+    node('ui.4', 'Delete', { ...row, bounds: { left: 0, top: 100, right: 200, bottom: 200 } }),
+    node('ui.5', 'Delete', { ...row, bounds: { left: 0, top: 300, right: 200, bottom: 400 } }),
+  );
+  const after = structuredClone(before);
+  // One row appears above: the ids shift down, so `ui.5` now names the row that sat above the target.
+  after.elements[3] = node('ui.4', 'Delete', {
+    ...row,
+    bounds: { left: 0, top: 20, right: 200, bottom: 120 },
+  });
+  after.elements[4] = node('ui.5', 'Delete', {
+    ...row,
+    bounds: { left: 0, top: 100, right: 200, bottom: 200 },
+  });
+  after.elements.push(
+    node('ui.6', 'Delete', { ...row, bounds: { left: 0, top: 300, right: 200, bottom: 400 } }),
+  );
+  assert.throws(
+    () => assertFresh(after, before, { type: 'tap-element', elementId: 'ui.5' }),
+    StaleObservationError,
+  );
+});
+
 test('a point tap survives a screen that redraws elsewhere, but not a different control under it', () => {
   const before = observe(),
     after = structuredClone(before);

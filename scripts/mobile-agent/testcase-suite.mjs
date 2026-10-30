@@ -28,21 +28,24 @@ export function numberedLines(text) {
 
 /**
  * Cases from one sheet's rows. `fileIndex` keeps ids stable and ASCII, because a case id is a file
- * name in the evidence directory and several sources are named in Chinese.
+ * name in the evidence directory and several sources are named in Chinese. A workbook with more than
+ * one sheet adds the sheet to the prefix, so two sheets cannot claim the same case id.
  */
-export function casesFromRows(source, fileIndex, rows) {
+export function casesFromRows(source, fileIndex, rows, sheetIndex = 1) {
   if (!rows.length) return [];
   const header = rows[0].map((cell) => String(cell).trim());
   const at = Object.fromEntries(
     Object.entries(COLUMNS).map(([key, label]) => [key, header.indexOf(label)]),
   );
+  const file = `f${String(fileIndex).padStart(2, '0')}`;
+  const prefix = sheetIndex > 1 ? `${file}s${sheetIndex}` : file;
   const cases = [];
   for (const [offset, row] of rows.slice(1).entries()) {
     const cell = (key) => (at[key] >= 0 ? (row[at[key]] ?? '') : '');
     const name = String(cell('name')).trim();
     if (!name || name === COLUMNS.name) continue;
     cases.push({
-      id: `f${String(fileIndex).padStart(2, '0')}-${offset + 2}`,
+      id: `${prefix}-${offset + 2}`,
       source,
       group: String(cell('group')).trim() || source,
       name,

@@ -56,7 +56,8 @@ the ledger moves.
 
 ## Findings on record
 
-Both are current behavior at commit `ad21b37`, reported rather than fixed. Neither has a test.
+The first two are current behavior at commit `ad21b37`, reported rather than fixed. The third was
+reported later and is fixed, with tests.
 
 **1. One unreadable line erases every other case's verdict.** `previousRuns` (scripts/testcases.mjs:73)
 wraps `readFile` _and_ `JSON.parse` in one `try … catch` that returns `[]`, and `recordResult` then
@@ -79,6 +80,16 @@ acquires the lock, `r1` dies while holding it, and the lock file stays. Every la
 `EEXIST`, makes 101 attempts 100 ms apart, and throws `The results file stayed locked` — so the
 benchmark run aborts instead of recording anything, until a human deletes the file.
 
+**3. A line that parsed but carried no verdict crashed the summary. Fixed.** `previousRuns` kept every
+line `JSON.parse` accepted, so a line such as `{"id":"legacy"}` — an older schema, a hand edit, a line
+another tool wrote — reached `summaryMarkdown` and threw on `run.name.replace`, taking `--summary` down
+with `EXIT=1` and no report. The model could not see it: it declared such a line unparseable, and its
+`TornLine` was itself valid JSON. `previousRuns` now drops an entry without a string `name` and
+`verdict`, so the summary prints the cases it can and stops writing the junk line back. Two sheets in
+one workbook also used to share case ids and overwrite each other's verdict; the second sheet now
+carries `f01s2-…`. Both are pinned by `scripts/testcases.test.mjs` and
+`scripts/mobile-agent/testcase-suite.test.mjs`.
+
 ## What is verified, and what is not
 
 Verified: the ordering and atomicity of `recordResult` (scripts/testcases.mjs:94-116), the read of
@@ -88,9 +99,15 @@ Verified: the ordering and atomicity of `recordResult` (scripts/testcases.mjs:94
 
 Not verified, and not implied by a pass:
 
+- The code's tolerance of a line that parses but carries no verdict. The model treats every non-`Whole`
+  line as one that empties the read; the code drops such a line and keeps the rest. A `damaged`
+  configuration is about a line that is not JSON, which both do the same way.
+- Case ids across the sheets of one workbook (`f01-2` versus `f01s2-2`) and which cases `--resume`
+  selects. `scripts/testcases.test.mjs` covers the ids and the summary's read of a damaged file; the
+  model covers neither.
 - `verdictOf`, `judgeExpected`, `expectationPreexists` — whether a verdict is _right_ about the phone.
 - `runCase`, the evidence files under `artifacts/testcases/<id>/`, the agent, the device.
-- Which cases `--resume` selects, the sheet parsing in `xlsx.mjs`, `summaryMarkdown`.
+- The sheet parsing in `xlsx.mjs`, `summaryMarkdown`'s layout, and which columns a sheet must have.
 - Anything holding more than one lock, or writes to the file by other tools. The model also assumes a
   runner's critical section is short enough for another runner's 101 retries, which is a timing
   assumption the model cannot state.
@@ -114,12 +131,13 @@ Not verified, and not implied by a pass:
 
 Coverage record — the verification describes these, and nothing else:
 
-| verified                                                                            | at        |
-| ----------------------------------------------------------------------------------- | --------- |
-| `scripts/testcases.mjs`: `recordResult`, `previousRuns`, the summary/resume readers | `ad21b37` |
-| `scripts/mobile-agent/testcase-suite.mjs`: `oneLinePerCase`                         | `ad21b37` |
+| verified                                                                                    | at        |
+| ------------------------------------------------------------------------------------------- | --------- |
+| `scripts/testcases.mjs`: `recordResult`, `previousRuns`, `load`, the summary/resume readers | `a2bc11f` |
+| `scripts/mobile-agent/testcase-suite.mjs`: `oneLinePerCase`, `casesFromRows`                | `a2bc11f` |
+| `scripts/testcases.test.mjs`, `scripts/mobile-agent/testcase-suite.test.mjs`                | `a2bc11f` |
 
-`ad21b37` is the commit at which this was last confirmed to describe the code. When a change touches
+`a2bc11f` is the commit at which this was last confirmed to describe the code. When a change touches
 those functions, run the script before publishing; if it passes unchanged, and the anchors agree, move
 the commit forward to the change that was confirmed. If it does not pass, the verification needs
 another look — see `/maintain-formal-verification-skill` for that pass.

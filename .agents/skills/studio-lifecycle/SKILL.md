@@ -4,7 +4,7 @@ name: studio-lifecycle
 description: TLA+ model check of the studio's run lifecycle in `apps/jev-studio/server/store.mjs` — the single-run guard, the one terminal status per run, `stop`'s early return, the SIGTERM→SIGKILL escalation, and the exit-code mapping. Use when a change touches `createStore`, `start`, `stop`, `finish`, or the child's `stdout`/`error`/`close` handlers; run it when the studio answered "a task is already running" with no task alive, showed a run as stopping forever, or reported a run as succeeded that the task never finished.
 ---
 
-<!-- sync-commit: 7130365 -->
+<!-- sync-commit: 44764bf -->
 
 # The studio's run lifecycle
 
@@ -40,13 +40,15 @@ needed; the first run fetches the pinned TLA+ tools (1.8.0, sha256 checked) into
 `tmp/tla/`, shared with `.agents/skills/testcase-ledger`, and every run after that is offline. It is
 deliberately not part of `pnpm check`, which must stay offline.
 
-The script runs two things:
+The script runs three things:
 
 - `anchors.mjs` greps `apps/jev-studio/server/store.mjs` for the facts the model assumes — the
   `active()` guard, the run's first status, `finish`'s early return and its two writes, the five
-  branches of the exit mapping, `stop`'s early return, and the SIGTERM plus the timer that only kills
-  while the id is still tracked. A `GONE` line means the code moved and the model may now describe a
-  store nobody runs.
+  branches of the exit mapping, `stop`'s early return, the SIGTERM plus the timer that only kills
+  while the id is still tracked, and the flood path that kills through that same timer. A `GONE` line
+  means the code moved and the model may now describe a store nobody runs.
+- It fails when a `.cfg` in this directory is not one of the configurations the script runs. A
+  configuration nobody runs cannot fail, so it must either be named here or deleted.
 - TLC checks each configuration: `baseline` (the store as it is, must pass) and four variants with one
   mechanism taken away (the proof that these invariants are able to fail, and that those lines are what
   make them hold).
@@ -76,7 +78,20 @@ moves.
 
 ## Findings on record
 
-None at `7130365`.
+Two, both closed by the model they now describe. Both were found by driving the real store, and neither
+test nor TLC configuration reached them before.
+
+1. **A task that floods stdout was reported ended while it still held the device.** The `stdout`
+   handler past the 1 MB limit killed the child with `SIGTERM` alone, then `finish` deleted it from
+   `processes`, so the run read `failed` (`active()` no longer saw it) while the child kept running;
+   `stop` could not reach it, and a second `start` was accepted on top of it. The run now sets its
+   error and goes through `terminate`, the same `SIGTERM` plus armed 3 s `SIGKILL` that `stop` uses, so
+   a flooding task stays `stopping` and `SingleActive` covers it. `store.test.mjs` pins it.
+
+2. **A result printed after the run ended was written onto it.** The `stdout` handler had no `ended`
+   guard (the model's `Result` requires an active status), so a late `result` line gave a `failed` run
+   `outcome: "done"`, and `close` could not correct a report already latched. The handler now returns
+   for an ended run. `store.test.mjs` pins it.
 
 One difference from the code is worth knowing rather than reporting: the model treats a SIGKILL as
 effective. `store.mjs` swallows a failed kill ("Process already exited."), so a task that survives both
@@ -87,7 +102,8 @@ the store can promise.
 ## What is verified, and what is not
 
 Verified: `createStore`'s run bookkeeping in `apps/jev-studio/server/store.mjs` — `start`, `finish`,
-`stop`, and the `stdout` / `error` / `close` handlers — for two runs and every order of their events.
+`stop`, the flood path past the 1 MB output limit, and the `stdout` / `error` / `close` handlers — for
+two runs and every order of their events.
 
 Not verified, and not implied by a pass:
 
@@ -118,9 +134,9 @@ Not verified, and not implied by a pass:
 
 Coverage record — the verification describes these, and nothing else:
 
-| verified                                                                                                 | at        |
-| -------------------------------------------------------------------------------------------------------- | --------- |
-| `apps/jev-studio/server/store.mjs`: `start`, `finish`, `stop`, the `stdout` / `error` / `close` handlers | `7130365` |
+| verified                                                                                                                              | at        |
+| ------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `apps/jev-studio/server/store.mjs`: `start`, `finish`, `stop`, `terminate`, the flood path, the `stdout` / `error` / `close` handlers | `44764bf` |
 
 `run.sh` reads the sync commit from the `<!-- sync-commit: -->` line above and lists every commit that
 touched `apps/jev-studio/server` since then. Move that line forward only after confirming the model

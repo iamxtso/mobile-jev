@@ -59,6 +59,14 @@ test('column order is read from the header, so an extra column changes nothing',
   assert.deepEqual(testCase.expected, ['导航开始']);
 });
 
+test('a second sheet in one workbook gets its own prefix, so no two sheets share a case id', () => {
+  const rows = [HEADER, ['组', '第二张表的用例', '', '', '1.做', '', '1.成', '', '']];
+  const [first] = casesFromRows('x.xlsx', 1, rows);
+  const [second] = casesFromRows('x.xlsx', 1, rows, 2);
+  assert.equal(first.id, 'f01-2');
+  assert.equal(second.id, 'f01s2-2');
+});
+
 test('rows without a case name are skipped, and ids stay on their sheet row', () => {
   const rows = [
     HEADER,

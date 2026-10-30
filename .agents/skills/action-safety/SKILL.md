@@ -3,7 +3,7 @@ name: action-safety
 description: Bounded exploration of the run loop's action safety in `scripts/mobile-agent/agent.mjs` — the freshness gate before input, the stale-only retry, the repeated-action guard, the longer-hold escalation and the step budget. Use when a change touches `runAgent`'s decide/act/read loop, `assertFresh`, `resolveAction` or `AdbDevice.run`, and before publishing a change to the way a decision becomes a tap, a hold or a key press; run it when a run tapped something twice, kept going after a dropped connection, or mutated past its step limit.
 ---
 
-<!-- sync-commit: 18a6746 -->
+<!-- sync-commit: 4658375 -->
 
 # The run loop's action safety
 
@@ -20,7 +20,7 @@ run, running the real `runAgent`. All four hold at `18a6746`.
 | property                | in one sentence                                                                          | the harm when it breaks                                                                                       |
 | ----------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `NoStaleDispatch`       | input is sent only while the screen is still the one the decision was made on            | the tap aims at a control that has moved, so it lands on whatever is there now                                |
-| `NoSameActionTwice`     | the same action is never sent twice while no read showed the screen move                 | a toggle is switched back off, a delete is asked for again, a message is sent twice                           |
+| `NoSameActionTwice`     | the same action is never sent twice while the control it names stood still               | a toggle is switched back off, a delete is asked for again, a message is sent twice                           |
 | `NoInputAfterUncertain` | a mutation whose outcome the loop never learned ends the run, so nothing further is sent | the loop acts on a screen it knows nothing about, and a retry repeats a mutation that may already have landed |
 | `RespectsStepLimit`     | a run dispatches mutations in at most `maxSteps` steps                                   | the run keeps tapping past its budget, and a benchmark's step limit stops meaning anything                    |
 
@@ -30,12 +30,13 @@ replay. Everything else — a tap, a swipe, a key, a typed value — is sent onc
 
 ## The bound
 
-Seven answers from the phone, for every act of a run:
+Eight answers from the phone, for every act of a run:
 
 | answer         | what the phone does                                                             |
 | -------------- | ------------------------------------------------------------------------------- |
 | `applied`      | the input lands and the screen changes                                          |
 | `noop`         | the input lands and the screen does not change                                  |
+| `twitch`       | the input lands, and a card elsewhere on the screen redraws on its own          |
 | `stale`        | another window redraws before the gate, so the decision is refused before input |
 | `refused`      | the gate passes but the target is gone, so nothing is sent                      |
 | `uncertain`    | the input lands and the connection drops before the answer arrives              |
@@ -43,7 +44,7 @@ Seven answers from the phone, for every act of a run:
 | `read-fails`   | the input lands and every read after it fails                                   |
 
 Every sequence of up to four of those, for a tap first and for a hold first, with a model that repeats
-itself and a model that changes its mind every step, with `maxSteps` 2: 2 × 2 × 7⁴ = 9604 runs. A
+itself and a model that changes its mind every step, with `maxSteps` 2: 2 × 2 × 8⁴ = 16384 runs. A
 longer run repeats the same branches, so the bound is where the exploration stops, not where the
 promises do.
 
@@ -66,7 +67,7 @@ The script runs three things:
   before the one dispatch, what a stale decision compares, the transport that reports an unknown
   mutation instead of retrying it, the stale-only catch, the repeated-action guard, the hold escalation,
   the step budget. A `GONE` line means the code moved and a pass would now mean nothing.
-- `explore.mjs` runs the 9604 schedules against `scripts/mobile-agent/agent.mjs` and reports each
+- `explore.mjs` runs the 16384 schedules against `scripts/mobile-agent/agent.mjs` and reports each
   property as `ok` or `GONE`, with one counterexample and the command that prints it in the loop's words.
 - `explore.mjs --mutants` copies `scripts/mobile-agent/` into `tmp/action-safety/mutants/`, removes one
   mechanism per copy, and requires the corresponding property to fail on a schedule the unpatched code
@@ -104,6 +105,14 @@ One hole was found here and closed at `18a6746`: the escalated second press of a
 unknown outcome and the run continued, where the press the model asked for ends it. The
 `uncertain-ends-the-run` anchor keeps that closed.
 
+A second hole was found here and closed when the double learned the `twitch` answer: the repeated-action
+guard remembered a tap by the control it hit, but `tapTarget` only resolved a target for `tap-element`
+and `tap`, so a `long-press` fell back to the whole-screen fingerprint. A launcher card that redraws on
+its own then made the same hold a new action, on 438 of the 16384 schedules, and
+`--action long-press --policy again --schedule twitch,applied,applied,applied` shows it. Every gesture
+that names a control is remembered by that control now, and
+`harness.test.mjs` pins one hold on a twitching screen.
+
 ## What is verified, and what is not
 
 Verified: `runAgent`'s decide → act → read loop, the stale retry and its budget, the repeated-action
@@ -118,10 +127,15 @@ Not verified, and not implied by a pass:
 - `type`, `clear` and `key` actions, and `input-verification.mjs`: the exploration's phone has no
   editable field, so typing and the read that confirms the typed value are outside it.
 - The network recovery's own taps inside `runAgent`, which call `device.act` outside `history` and
-  outside the repeated-action guard.
+  outside the repeated-action guard. The three recovery dispatches (the settings `open-app`, the
+  single guess tap, the menu-row walk) and the Wi-Fi association wait are covered by
+  `scripts/mobile-agent/harness.test.mjs` instead: the 2.5 s association waits and the settings-app
+  walk would not fit the exploration's bound, so the schedules stay out of them.
 - The pixel and glyph path (`pixels.mjs`, `policy.readsControlChange`): the double has no screenshot, so
   `goalMet` is always absent and a `done` can only come from the policy. The model in the exploration
   never answers done, so the reporting half of `AGENTS.md` is not what these schedules check.
+- The second `input tap` of a `double-tap`. It is two taps inside one act, and the double answers one
+  dispatch per act, so a tap that lands after the first one moved the screen is outside every property.
 - The accessibility helper, the studio, `pnpm verify` and `pnpm testcases`.
 - Two assumptions the double makes. A read always describes the screen as it is at that moment, so a
   tree that lags a redraw is modelled by `noop` — to the loop the two are the same answer. And the
@@ -150,7 +164,8 @@ Coverage record — this exploration describes these, and nothing else:
 | verified                                                                                                                              | at        |
 | ------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | `scripts/mobile-agent/agent.mjs`: `runAgent`'s loop, the stale retry, the repeated-action guard, the hold escalation, the step budget | `18a6746` |
-| `scripts/mobile-agent/device.mjs`: `assertFresh`, `resolveAction`'s gate, `AdbDevice.run`'s one-attempt mutation                      | `18a6746` |
+| `scripts/mobile-agent/device.mjs`: `assertFresh`, `resolveAction`'s gate, `AdbDevice.run`'s one-attempt mutation                      | `c29bacb` |
+| `scripts/mobile-agent/harness.test.mjs`: the recovery dispatches' uncertain-outcome rule, the Wi-Fi association wait's repeat guard   | `7aa9605` |
 
 `run.sh` reads the sync commit from the `<!-- sync-commit: -->` line above and lists every commit that
 touched `scripts/mobile-agent` since then. Move that line forward only after confirming the exploration

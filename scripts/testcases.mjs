@@ -65,7 +65,8 @@ async function load(args) {
   const cases = [];
   for (const [index, name] of names.entries()) {
     const sheets = await readWorkbook(join(sheetDir, name));
-    for (const sheet of sheets) cases.push(...casesFromRows(name, index + 1, sheet.rows));
+    for (const [sheetIndex, sheet] of sheets.entries())
+      cases.push(...casesFromRows(name, index + 1, sheet.rows, sheetIndex + 1));
   }
   return cases;
 }
@@ -77,7 +78,11 @@ async function previousRuns() {
       text
         .split('\n')
         .filter(Boolean)
-        .map((line) => JSON.parse(line)),
+        .map((line) => JSON.parse(line))
+        // A line that parses but carries no verdict is not evidence: an older schema, a hand edit, or
+        // a line another tool wrote. The summary prints a name and a verdict, so a line without them
+        // would throw there instead of here. Drop it, and `recordResult` will not write it back.
+        .filter((entry) => typeof entry?.name === 'string' && typeof entry?.verdict === 'string'),
     );
   } catch {
     return [];
