@@ -55,11 +55,18 @@ const anchors = [
   {
     id: 'mutation-never-retried',
     file: 'device.mjs',
-    about: 'the transport reports an unknown mutation outcome once and never sends it again',
+    about:
+      'the transport reports an unknown mutation outcome once, under its own type, and never retries it',
     holds: (text) =>
-      text.includes(
-        "if (mutation)\n        throw new Error('ADB mutation outcome is uncertain; the action was not retried.');",
-      ),
+      text.includes('export class MutationUncertainError extends Error {}') &&
+      text.includes('throw new MutationUncertainError('),
+  },
+  {
+    id: 'uncertain-ends-the-run',
+    file: 'agent.mjs',
+    about: 'the second press of a hold does not swallow an unknown outcome either',
+    holds: (text) =>
+      ordered(text, 'if (longer) {', 'if (error instanceof MutationUncertainError) throw error;'),
   },
   {
     id: 'only-stale-continues',

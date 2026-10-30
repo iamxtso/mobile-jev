@@ -3,7 +3,7 @@ name: action-safety
 description: Bounded exploration of the run loop's action safety in `scripts/mobile-agent/agent.mjs` — the freshness gate before input, the stale-only retry, the repeated-action guard, the longer-hold escalation and the step budget. Use when a change touches `runAgent`'s decide/act/read loop, `assertFresh`, `resolveAction` or `AdbDevice.run`, and before publishing a change to the way a decision becomes a tap, a hold or a key press; run it when a run tapped something twice, kept going after a dropped connection, or mutated past its step limit.
 ---
 
-<!-- sync-commit: ad21b37 -->
+<!-- sync-commit: 18a6746 -->
 
 # The run loop's action safety
 
@@ -13,7 +13,7 @@ on a delete, a send button or a Wi-Fi switch undoes what the goal asked for, and
 so — the second tap lands on the same control and looks exactly like the first.
 
 This skill checks four promises that keep that rule, over every order of the phone's answers to a short
-run, running the real `runAgent`. Three hold at `ad21b37`; the fourth has one hole, recorded below.
+run, running the real `runAgent`. All four hold at `18a6746`.
 
 ## What it proves
 
@@ -23,9 +23,6 @@ run, running the real `runAgent`. Three hold at `ad21b37`; the fourth has one ho
 | `NoSameActionTwice`     | the same action is never sent twice while no read showed the screen move                 | a toggle is switched back off, a delete is asked for again, a message is sent twice                           |
 | `NoInputAfterUncertain` | a mutation whose outcome the loop never learned ends the run, so nothing further is sent | the loop acts on a screen it knows nothing about, and a retry repeats a mutation that may already have landed |
 | `RespectsStepLimit`     | a run dispatches mutations in at most `maxSteps` steps                                   | the run keeps tapping past its budget, and a benchmark's step limit stops meaning anything                    |
-
-`NoInputAfterUncertain` is the one that fails today, in the second press of a long hold: see
-[Findings on record](#findings-on-record).
 
 The one second press the properties allow is the loop's own longer hold: a `long-press` that drew
 nothing is pressed again at 3000 ms (`HOLD_ESCALATION_MS`), which is a different action, so it is not a
@@ -58,8 +55,8 @@ promises do.
 .agents/skills/action-safety/run.sh long-press noop,uncertain changes-its-mind   # the finding, step by step
 ```
 
-Exit code 0 means the loop behaves as this skill records: three promises hold, the fourth fails only on
-the finding below, and every broken variant of those promises is still caught where the code passes.
+Exit code 0 means all four promises hold, every broken variant of them is still caught where the code
+passes, and the code still offers what the exploration assumes.
 No device, no network, no API key: this never leaves the repository. It is deliberately not part of
 `pnpm check`, which must stay offline and fast, but it runs offline too and costs about a second.
 
@@ -88,40 +85,24 @@ TLA+ model earns its keep, and `.agents/skills/testcase-ledger` already has one.
 
 ## Findings on record
 
-**1. A second, longer press whose outcome is unknown does not end the run.** `ad21b37`, unfixed, no
-test. 50 of the 9604 schedules. The transport rule alone is tested (adb-device.test.mjs:357, "an
-uncertain ADB mutation fails once and is not replayed"); the loop's second press is not.
+None at `18a6746`. All four properties hold, and each one is caught by the removal it guards:
 
-The loop presses a control a second time, held 3000 ms, when the first press drew nothing
-(`longerHold`, agent.mjs:48). That second press sits in a `try … catch` that records
-`entry.holdRefused = true` and keeps the read from _before_ the press (agent.mjs:824-840), while the
-press the model actually asked for is rethrown on any non-stale error (agent.mjs:682). So an unknown
-outcome ends the run in one place and is swallowed in the other.
+| variant                  | what it removes                                        | property it breaks      |
+| ------------------------ | ------------------------------------------------------ | ----------------------- |
+| `replay-uncertain`       | the stale-only catch, so an unknown outcome is retried | `NoInputAfterUncertain` |
+| `repeat-the-same-action` | the `repeated.has(signature)` guard                    | `NoSameActionTwice`     |
+| `no-freshness-gate`      | `assertFresh` itself                                   | `NoStaleDispatch`       |
+| `no-step-limit`          | the `step >= maxSteps` check before the action         | `RespectsStepLimit`     |
 
-`.agents/skills/action-safety/run.sh long-press noop,uncertain changes-its-mind`:
+Five mechanisms carry the promises: the gate in `resolveAction` (`device.mjs`), the transport's
+one-attempt mutation reported as `MutationUncertainError` (`AdbDevice.run`), the loop's
+`instanceof StaleObservationError` catch, the `instanceof MutationUncertainError` rethrow in the second
+press of a hold, and the repeated-action guard that runs before `device.act`. If a change moves any of
+them, run the script before deciding the change is fine.
 
-1. step 1: the model asks for `long-press` on `Note`. The phone takes the input and draws nothing.
-2. the loop presses the same control again, held 3000 ms. The phone takes that input too, and the
-   connection drops before it answers.
-3. the loop catches the error as a refused press, keeps its read from before the press, and continues
-   to step 2.
-4. the model asks for a tap. The gate refuses it as stale — the screen did move — the loop re-reads,
-   and then sends the tap.
-
-Why it matters: after a 3-second hold the loop does not know what the phone did. That hold is escalated
-precisely because a short press may not have released a touch-locked screen or opened a context menu,
-which are states where a second action is not free. The run continues to spend steps on the result, and
-the failure never reaches the trace as a failure — `holdRefused` reads like a refusal, not like a lost
-connection.
-
-Why it is not the replay `AGENTS.md` forbids: the same press is not sent again, because the
-repeated-action guard stops that, and every later input still passes the gate, so nothing is aimed at a
-screen two versions old. What is broken is the weaker promise in the table, that an unknown outcome
-ends the run.
-
-What would close it: treat a non-stale error from that second press the way the primary press treats
-it — end the run and report it — instead of folding it into `holdRefused`. Not applied here, because it
-is a product decision and not what this skill was asked to change.
+One hole was found here and closed at `18a6746`: the escalated second press of a hold swallowed its own
+unknown outcome and the run continued, where the press the model asked for ends it. The
+`uncertain-ends-the-run` anchor keeps that closed.
 
 ## What is verified, and what is not
 
@@ -130,7 +111,7 @@ guard, the longer-hold escalation and the step budget in `scripts/mobile-agent/a
 gate as `resolveAction` uses it, and the one-attempt mutation rule of `AdbDevice.run`, in
 `scripts/mobile-agent/device.mjs`.
 
-Not verified, and not implied by a pass, or by the finding:
+Not verified, and not implied by a pass:
 
 - `open-app`, `HOME`, `BACK` and the other navigation actions: `resolveAction` dispatches them before
   the gate on purpose, so the double does not model them.
@@ -158,9 +139,9 @@ Not verified, and not implied by a pass, or by the finding:
    properties.
 3. A violation at a step the code can really take is a finding. Do not weaken the property and do not
    change the loop to make it pass unless the task asks for it; report the counterexample instead, and
-   record it here with its schedule and its count.
-4. The recorded finding passing is news: the hole was closed, silently. Remove it from this file and
-   from the `finding` list in `run.sh` in the same change.
+   record it here with its schedule and its count. `run.sh` then fails until the record says so.
+4. A finding recorded here that starts passing is news: the hole was closed, silently. Say so, and
+   drop it from this section in the same change.
 
 ## Keeping it in step
 
@@ -168,8 +149,8 @@ Coverage record — this exploration describes these, and nothing else:
 
 | verified                                                                                                                              | at        |
 | ------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| `scripts/mobile-agent/agent.mjs`: `runAgent`'s loop, the stale retry, the repeated-action guard, the hold escalation, the step budget | `ad21b37` |
-| `scripts/mobile-agent/device.mjs`: `assertFresh`, `resolveAction`'s gate, `AdbDevice.run`'s one-attempt mutation                      | `ad21b37` |
+| `scripts/mobile-agent/agent.mjs`: `runAgent`'s loop, the stale retry, the repeated-action guard, the hold escalation, the step budget | `18a6746` |
+| `scripts/mobile-agent/device.mjs`: `assertFresh`, `resolveAction`'s gate, `AdbDevice.run`'s one-attempt mutation                      | `18a6746` |
 
 `run.sh` reads the sync commit from the `<!-- sync-commit: -->` line above and lists every commit that
 touched `scripts/mobile-agent` since then. Move that line forward only after confirming the exploration

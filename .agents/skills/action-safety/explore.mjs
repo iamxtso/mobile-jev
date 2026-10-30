@@ -110,6 +110,8 @@ function loadApi(dir) {
     runAgent: agent.runAgent,
     assertFresh: device.assertFresh,
     summarizeState: device.summarizeState,
+    // The loop tells an unknown mutation from a refusal by this type, so the double has to throw it.
+    MutationUncertainError: device.MutationUncertainError,
   }));
 }
 
@@ -166,7 +168,9 @@ function phone(api, schedule, actionType) {
       trace.push(event);
       if (kind === 'uncertain') {
         state.revision++;
-        throw new Error('ADB mutation outcome is uncertain; the action was not retried.');
+        throw new api.MutationUncertainError(
+          'ADB mutation outcome is uncertain; the action was not retried.',
+        );
       }
       if (kind === 'read-fails') {
         state.revision++;

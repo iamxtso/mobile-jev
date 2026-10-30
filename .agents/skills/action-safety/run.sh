@@ -5,18 +5,16 @@
 #   .agents/skills/action-safety/run.sh long-press noop,uncertain      # one schedule, in the loop's words
 #   .agents/skills/action-safety/run.sh long-press noop,uncertain changes-its-mind
 #
-# Exit code 0 means the loop behaves as this skill records: three promises hold, the fourth is the
-# finding recorded in SKILL.md and nothing new, and every broken variant of those promises is still
-# caught where the code passes. Anything else needs a decision, and the last lines say which.
+# Exit code 0 means the loop makes all four promises, every broken variant of them is still caught
+# where the code passes, and the code still offers what the exploration assumes. Anything else needs a
+# decision, and the last lines say which.
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 failed=0
 
-# What the code does at the sync commit in SKILL.md.
-holds="NoStaleDispatch NoSameActionTwice RespectsStepLimit"
-finding="NoInputAfterUncertain"
+# What the code does at the sync commit in SKILL.md: all four hold.
 
 if [ "$#" -gt 0 ]; then
   action=${1:-tap-element}
@@ -34,22 +32,8 @@ out=$(node "$here/explore.mjs")
 echo "$out"
 gones=$(printf '%s\n' "$out" | awk '/GONE/ {print $2}' | tr '\n' ' ')
 for property in $gones; do
-  case " $finding " in
-    *" $property "*) printf '  %-26s still the finding on record\n' "$property" ;;
-    *)
-      printf '  %-26s no longer holds and is not on record\n' "$property"
-      failed=1
-      ;;
-  esac
-done
-for property in $finding; do
-  case " $gones " in
-    *" $property "*) ;;
-    *)
-      printf '  %-26s now holds: the recorded finding was fixed. Update SKILL.md.\n' "$property"
-      failed=1
-      ;;
-  esac
+  printf '  %-26s no longer holds\n' "$property"
+  failed=1
 done
 
 echo
@@ -81,7 +65,8 @@ The loop does not behave as this skill records. Decide which side is out of date
     counterexample in the loop's words, as `run.sh <action> <schedule> [policy]` prints it.
   - A GONE anchor means the code no longer offers what the exploration assumes, so a pass would mean
     nothing. Fix the exploration before reading any property as a result.
-  - A recorded finding that now passes is news. Update SKILL.md and the lists above in one change.
+  - A property that fails only where the code cannot really go is a modelling error in explore.mjs, not
+    a finding. Fix the exploration first.
 EOT
 fi
 
