@@ -43,6 +43,32 @@ export function createStore({
     }
   };
   const active = () => [...runs.values()].find((r) => ['running', 'stopping'].includes(r.status));
+  const kill = (id, signal) => {
+    const child = processes.get(id);
+    if (!child) return;
+    try {
+      if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch {
+      /* Process already exited. */
+    }
+  };
+  /**
+   * Take the device away from whatever task holds this run, and keep holding it until the task is gone.
+   *
+   * `stop` is not the only caller: a task that floods stdout is killed the same way, so that one kill
+   * path cannot leave a live child the store no longer tracks and a second task cannot start on top.
+   */
+  const terminate = (run) => {
+    if (run.endedAt !== null) return;
+    run.status = 'stopping';
+    publish(run.id);
+    kill(run.id, 'SIGTERM');
+    const timer = setTimeout(() => {
+      if (processes.has(run.id)) kill(run.id, 'SIGKILL');
+    }, 3000);
+    timer.unref();
+  };
   return {
     list: () => [...runs.values()].reverse().map((r) => snapshot(r.id)),
     get: snapshot,
@@ -110,10 +136,11 @@ export function createStore({
       child.stdin.on('error', () => {});
       child.stderr.resume(); // Never relay process environment or raw stderr to the browser.
       child.stdout.on('data', (chunk) => {
+        if (run.endedAt !== null) return;
         buffer += chunk.toString();
         if (buffer.length > 1_000_000) {
-          child.kill('SIGTERM');
-          finish('failed', 'Task output exceeded its limit.');
+          run.error = 'Task output exceeded its limit.';
+          terminate(run);
           return;
         }
         let index;
@@ -151,25 +178,10 @@ export function createStore({
       return snapshot(id);
     },
     stop(id) {
-      const run = runs.get(id),
-        child = processes.get(id);
+      const run = runs.get(id);
       if (!run) throw new StudioError('Run not found.', 404);
-      if (!child || run.endedAt !== null) return snapshot(id);
-      run.status = 'stopping';
-      publish(id);
-      const kill = (signal) => {
-        try {
-          if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
-          else child.kill(signal);
-        } catch {
-          /* Process already exited. */
-        }
-      };
-      kill('SIGTERM');
-      const timer = setTimeout(() => {
-        if (processes.has(id)) kill('SIGKILL');
-      }, 3000);
-      timer.unref();
+      if (!processes.has(id) || run.endedAt !== null) return snapshot(id);
+      terminate(run);
       return snapshot(id);
     },
   };

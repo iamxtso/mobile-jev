@@ -10,6 +10,8 @@
       spawn throws                                 -> SpawnFails   finish('failed')
       child.stdout 'data' {type:'result'}          -> Result       run.outcome := event.outcome
       child.stdout 'data' {type:'error'}           -> ErrorEvent   run.error := event.message
+      child.stdout 'data' over 1 MB                -> OutputLimit  run.error := the limit, then the task is
+                                                                     killed the way `stop` kills one
       child.once('error') -> finish('failed')      -> SpawnError   the run ends while the child lives
       child.once('close', code)                    -> Close        the one place a run is reported
         if (run.status === 'stopping')                     -> 'stopped'
@@ -111,6 +113,17 @@ Stop(r) ==
   /\ timer' = [timer EXCEPT ![r] = IF EscalateStop THEN "armed" ELSE "none"]
   /\ UNCHANGED <<process, outcome, error, ended, closedOutcome>>
 
+\* `child.stdout 'data'` past the 1 MB limit: the store records why, then takes the device away from
+\* the task the way `stop` does, so a flood cannot leave a live child the store no longer tracks.
+OutputLimit(r) ==
+  /\ process[r] = "live"
+  /\ status[r] \in Active
+  /\ error' = [error EXCEPT ![r] = "output limit"]
+  /\ status' = [status EXCEPT ![r] = "stopping"]
+  /\ signal' = [signal EXCEPT ![r] = "term"]
+  /\ timer' = [timer EXCEPT ![r] = IF EscalateStop THEN "armed" ELSE "none"]
+  /\ UNCHANGED <<process, outcome, ended, closedOutcome>>
+
 \* Three seconds later: the id is still in `processes`, so it is killed.
 KillTimer(r) ==
   /\ status[r] = "stopping"
@@ -157,7 +170,7 @@ Close(r, code) ==
 
 Next ==
   \/ \E r \in Runs : Start(r) \/ Spawned(r) \/ SpawnFails(r) \/ ErrorEvent(r) \/ Stop(r)
-       \/ KillTimer(r) \/ LateKill(r) \/ SpawnError(r)
+       \/ OutputLimit(r) \/ KillTimer(r) \/ LateKill(r) \/ SpawnError(r)
   \/ \E r \in Runs, o \in Outcomes : Result(r, o)
   \/ \E r \in Runs, code \in Codes : Close(r, code)
   \/ UNCHANGED vars        \* no request and no event pending: the store is quiescent

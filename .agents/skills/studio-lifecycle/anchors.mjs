@@ -5,8 +5,8 @@
  * The model is a small state machine written by hand, so every guard it relies on has to exist in
  * `apps/jev-studio/server/store.mjs`: the single-run guard, the run's first status, the latch that
  * makes `finish` idempotent, the five branches that map an exit to a status, `stop`'s early return,
- * the SIGTERM plus the 3 s SIGKILL that only fires while the id is still tracked, and the child's
- * own error handler.
+ * the SIGTERM plus the 3 s SIGKILL that only fires while the id is still tracked, the child's own
+ * error handler, and the stdout handler that stops a flooded task the same way `stop` does.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -62,16 +62,31 @@ const anchors = [
   {
     id: 'stop-leaves-ended-runs-alone',
     about: 'stop returns for a run that already ended, or whose process is gone',
-    holds: () => text.includes('if (!child || run.endedAt !== null) return snapshot(id);'),
+    holds: () =>
+      text.includes('if (!processes.has(id) || run.endedAt !== null) return snapshot(id);'),
   },
   {
     id: 'stop-escalates',
     about:
-      'stop marks the run stopping, sends SIGTERM, and arms a 3 s SIGKILL that only fires while the id is tracked',
+      'terminate marks the run stopping, sends SIGTERM, and arms a 3 s SIGKILL that only fires while the id is tracked',
     holds: () =>
-      ordered("run.status = 'stopping';", "\n      kill('SIGTERM');") &&
-      ordered("\n      kill('SIGTERM');", 'const timer = setTimeout(') &&
-      ordered('const timer = setTimeout(', "if (processes.has(id)) kill('SIGKILL');"),
+      ordered("run.status = 'stopping';", "\n    kill(run.id, 'SIGTERM');") &&
+      ordered("\n    kill(run.id, 'SIGTERM');", 'const timer = setTimeout(') &&
+      ordered('const timer = setTimeout(', "if (processes.has(run.id)) kill(run.id, 'SIGKILL');"),
+  },
+  {
+    id: 'output-limit-is-a-stop',
+    about:
+      'a task that floods its protocol stream is killed through the same SIGTERM-then-SIGKILL path',
+    holds: () =>
+      ordered("run.error = 'Task output exceeded its limit.';", 'terminate(run);') &&
+      text.includes("child.kill('SIGTERM')") === false,
+  },
+  {
+    id: 'stdout-ignores-ended-runs',
+    about: 'a result printed after the run ended never writes onto it',
+    holds: () =>
+      text.includes('if (run.endedAt !== null) return;\n        buffer += chunk.toString();'),
   },
   {
     id: 'child-error-reports-failure',
