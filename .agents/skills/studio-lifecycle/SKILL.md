@@ -4,7 +4,7 @@ name: studio-lifecycle
 description: TLA+ model check of the studio's run lifecycle in `apps/jev-studio/server/store.mjs` — the single-run guard, the one terminal status per run, `stop`'s early return, the SIGTERM→SIGKILL escalation, and the exit-code mapping. Use when a change touches `createStore`, `start`, `stop`, `finish`, or the child's `stdout`/`error`/`close` handlers; run it when the studio answered "a task is already running" with no task alive, showed a run as stopping forever, or reported a run as succeeded that the task never finished.
 ---
 
-<!-- sync-commit: 7130365 -->
+<!-- sync-commit: 44764bf -->
 
 # The studio's run lifecycle
 
@@ -134,9 +134,9 @@ Not verified, and not implied by a pass:
 
 Coverage record — the verification describes these, and nothing else:
 
-| verified                                                                                                 | at        |
-| -------------------------------------------------------------------------------------------------------- | --------- |
-| `apps/jev-studio/server/store.mjs`: `start`, `finish`, `stop`, the `stdout` / `error` / `close` handlers | `7130365` |
+| verified                                                                                                                              | at        |
+| ------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| `apps/jev-studio/server/store.mjs`: `start`, `finish`, `stop`, `terminate`, the flood path, the `stdout` / `error` / `close` handlers | `44764bf` |
 
 `run.sh` reads the sync commit from the `<!-- sync-commit: -->` line above and lists every commit that
 touched `apps/jev-studio/server` since then. Move that line forward only after confirming the model
