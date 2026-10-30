@@ -29,6 +29,7 @@ expect() {
   esac
 }
 configs="baseline two-active stop-after-end no-kill-timer any-outcome-succeeds"
+all=$configs
 
 if [ "$#" -gt 0 ]; then
   configs=$*
@@ -64,6 +65,19 @@ failed=0
 
 echo "== model against code =="
 node "$here/anchors.mjs" || failed=1
+
+# A .cfg in this directory that the list above does not name is a check nobody runs, so it can stop
+# passing without anyone noticing. Name it here, or delete it.
+for cfg in "$here"/*.cfg; do
+  name=$(basename "$cfg" .cfg)
+  case " $all " in
+    *" $name "*) ;;
+    *)
+      echo "  $name.cfg is not one of the configurations this script runs" >&2
+      failed=1
+      ;;
+  esac
+done
 
 for cfg in $configs; do
   log="$work/$cfg.log"
