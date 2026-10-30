@@ -3,7 +3,7 @@ name: action-safety
 description: Bounded exploration of the run loop's action safety in `scripts/mobile-agent/agent.mjs` — the freshness gate before input, the stale-only retry, the repeated-action guard, the longer-hold escalation and the step budget. Use when a change touches `runAgent`'s decide/act/read loop, `assertFresh`, `resolveAction` or `AdbDevice.run`, and before publishing a change to the way a decision becomes a tap, a hold or a key press; run it when a run tapped something twice, kept going after a dropped connection, or mutated past its step limit.
 ---
 
-<!-- sync-commit: c29bacb -->
+<!-- sync-commit: 4658375 -->
 
 # The run loop's action safety
 
