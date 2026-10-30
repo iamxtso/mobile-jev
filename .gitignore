@@ -12,4 +12,5 @@ next-env.d.ts
 *.log
 *.pem
 tmp/
+.claude/worktrees/
 .cache/

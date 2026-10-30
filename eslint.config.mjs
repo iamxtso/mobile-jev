@@ -13,6 +13,8 @@ export default [
       'coverage/**',
       // Scratch: the TLA+ work directory and the exploration's broken variants.
       'tmp/**',
+      // Agent worktrees: a past run's scratch copies, not this tree's source.
+      '**/.claude/worktrees/**',
     ],
   },
   js.configs.recommended,
