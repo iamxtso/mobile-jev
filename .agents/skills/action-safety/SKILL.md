@@ -118,7 +118,10 @@ Not verified, and not implied by a pass:
 - `type`, `clear` and `key` actions, and `input-verification.mjs`: the exploration's phone has no
   editable field, so typing and the read that confirms the typed value are outside it.
 - The network recovery's own taps inside `runAgent`, which call `device.act` outside `history` and
-  outside the repeated-action guard.
+  outside the repeated-action guard. The three recovery dispatches (the settings `open-app`, the
+  single guess tap, the menu-row walk) and the Wi-Fi association wait are covered by
+  `scripts/mobile-agent/harness.test.mjs` instead: the 2.5 s association waits and the settings-app
+  walk would not fit the exploration's bound, so the schedules stay out of them.
 - The pixel and glyph path (`pixels.mjs`, `policy.readsControlChange`): the double has no screenshot, so
   `goalMet` is always absent and a `done` can only come from the policy. The model in the exploration
   never answers done, so the reporting half of `AGENTS.md` is not what these schedules check.
@@ -151,6 +154,7 @@ Coverage record — this exploration describes these, and nothing else:
 | ------------------------------------------------------------------------------------------------------------------------------------- | --------- |
 | `scripts/mobile-agent/agent.mjs`: `runAgent`'s loop, the stale retry, the repeated-action guard, the hold escalation, the step budget | `18a6746` |
 | `scripts/mobile-agent/device.mjs`: `assertFresh`, `resolveAction`'s gate, `AdbDevice.run`'s one-attempt mutation                      | `18a6746` |
+| `scripts/mobile-agent/harness.test.mjs`: the recovery dispatches' uncertain-outcome rule, the Wi-Fi association wait's repeat guard   | `e514ed7` |
 
 `run.sh` reads the sync commit from the `<!-- sync-commit: -->` line above and lists every commit that
 touched `scripts/mobile-agent` since then. Move that line forward only after confirming the exploration

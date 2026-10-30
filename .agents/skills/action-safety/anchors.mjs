@@ -72,7 +72,7 @@ const anchors = [
     id: 'only-stale-continues',
     file: 'agent.mjs',
     about:
-      'the loop swallows exactly one kind of dispatch failure: a stale decision, refused before input',
+      "the loop's own dispatch swallows exactly one kind of failure: a stale decision, refused before input",
     holds: (text) =>
       text.includes(
         'if (!(error instanceof StaleObservationError)) throw error; // Never retry uncertain mutations.',

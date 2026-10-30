@@ -594,6 +594,204 @@ test('a longer hold whose outcome is unknown ends the run instead of being swall
   assert.equal(asks.length, 1);
 });
 
+test('an uncertain open-app inside network recovery ends the run', async () => {
+  const { device, calls } = fakeDevice();
+  const offline = { internet: false, wifiOn: false, saved: 2 };
+  device.observe = async () => ({
+    ...summarizeState(state(), 'phone'),
+    network: offline,
+  });
+  device.listApps = async () => [{ packageName: 'com.example.settings', label: 'Settings' }];
+  device.act = async (action) => {
+    calls.push(action);
+    if (action.type === 'open-app')
+      throw new MutationUncertainError(
+        'ADB mutation outcome is uncertain; the action was not retried.',
+      );
+    return {};
+  };
+  const policy = { decide: async () => ({ status: 'blocked', reason: 'no network' }) };
+  await assert.rejects(
+    () =>
+      runAgent({
+        device,
+        policy,
+        goal: 'search for a place',
+        execute: true,
+        maxSteps: 8,
+        settleMs: 0,
+        settleTimeoutMs: 0,
+      }),
+    MutationUncertainError,
+  );
+  // Nothing is sent after the press that may have landed.
+  assert.equal(calls.length, 1);
+});
+
+test('an uncertain guess tap inside network recovery ends the run', async () => {
+  process.env.NETWORK_MEMO_PATH = join(tmpdir(), `network-memo-guess-${process.pid}.json`);
+  const calls = [];
+  const offline = { internet: false, wifiOn: false, saved: 2 };
+  const menu = [
+    {
+      ...summarizeState(state(), 'phone').elements[0],
+      id: 'ui.0',
+      text: 'Network',
+      label: '',
+      resourceId: 'com.example.settings:id/row0',
+      clickable: true,
+      bounds: { left: 0, top: 100, right: 200, bottom: 180 },
+    },
+  ];
+  // No screenshot: the page question cannot be asked, so recovery falls to the single guess tap.
+  const screen = () => ({
+    ...summarizeState(state(), 'phone'),
+    network: offline,
+    elements: menu,
+  });
+  const device = {
+    assertReady: async () => {},
+    observe: async () => screen(),
+    observeDirect: async () => screen(),
+    listApps: async () => [{ packageName: 'com.example.settings', label: 'Settings' }],
+    act: async (action) => {
+      calls.push(action);
+      if (action.type !== 'open-app')
+        throw new MutationUncertainError(
+          'ADB mutation outcome is uncertain; the action was not retried.',
+        );
+      return {};
+    },
+  };
+  const policy = {
+    decide: async () => ({ status: 'blocked', reason: 'no network' }),
+    confirmsNetworkScreen: async () => 0.99,
+  };
+  await assert.rejects(
+    () =>
+      runAgent({
+        device,
+        policy,
+        goal: 'search for a place',
+        execute: true,
+        maxSteps: 8,
+        settleMs: 0,
+        settleTimeoutMs: 0,
+      }),
+    MutationUncertainError,
+  );
+  // The settings app was opened, the guess tap ended the run, and nothing followed it.
+  assert.equal(calls.length, 2);
+  delete process.env.NETWORK_MEMO_PATH;
+});
+
+test('an uncertain menu-row tap inside network recovery ends the run', async () => {
+  process.env.NETWORK_MEMO_PATH = join(tmpdir(), `network-memo-row-${process.pid}.json`);
+  const calls = [];
+  const offline = { internet: false, wifiOn: false, saved: 2 };
+  const menu = [
+    { text: 'Bluetooth', clickable: true },
+    { text: 'Network', clickable: true },
+  ].map((node, index) => ({
+    ...summarizeState(state(), 'phone').elements[0],
+    id: `ui.${index}`,
+    text: node.text,
+    label: '',
+    resourceId: `com.example.settings:id/row${index}`,
+    clickable: true,
+    bounds: { left: 0, top: 100 + index * 100, right: 200, bottom: 180 + index * 100 },
+  }));
+  const screen = () => ({
+    ...summarizeState(state(), 'phone'),
+    network: offline,
+    elements: menu,
+  });
+  let onNetworkPage = false;
+  const device = {
+    assertReady: async () => {},
+    observe: async () => screen(),
+    observeDirect: async () => screen(),
+    screenshot: async () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]),
+    listApps: async () => [{ packageName: 'com.example.settings', label: 'Settings' }],
+    act: async (action) => {
+      calls.push(action);
+      if (action.type === 'tap-element' && action.elementId === 'ui.1') onNetworkPage = true;
+      if (action.type !== 'open-app')
+        throw new MutationUncertainError(
+          'ADB mutation outcome is uncertain; the action was not retried.',
+        );
+      return {};
+    },
+  };
+  const policy = {
+    decide: async () => ({ status: 'blocked', reason: 'no network' }),
+    confirmsNetworkScreen: async () => (onNetworkPage ? 0.99 : 0.01),
+  };
+  await assert.rejects(
+    () =>
+      runAgent({
+        device,
+        policy,
+        goal: 'search for a place',
+        execute: true,
+        maxSteps: 8,
+        settleMs: 0,
+        settleTimeoutMs: 0,
+      }),
+    MutationUncertainError,
+  );
+  // The settings app was opened, the first row tap ended the run, and nothing followed it.
+  assert.equal(calls.length, 2);
+  delete process.env.NETWORK_MEMO_PATH;
+});
+
+// The association wait below costs three real 2.5 s sleeps; that is the behaviour under test.
+test('a Wi-Fi association wait keeps the repeat guard', async () => {
+  const calls = [];
+  // `saved: 0` keeps network recovery out of this run, so only the wait-and-guard path is exercised.
+  const associating = { internet: false, wifiOn: true, saved: 0 };
+  const button = {
+    ...summarizeState(state(), 'phone').elements[0],
+    id: 'ui.0',
+    text: '重庆',
+    label: '',
+    resourceId: 'com.example.navi:id/result0',
+    clickable: true,
+    bounds: { left: 100, top: 100, right: 300, bottom: 200 },
+  };
+  const device = {
+    assertReady: async () => {},
+    observe: async () => ({
+      ...summarizeState(state(), 'phone'),
+      network: associating,
+      elements: [button],
+    }),
+    act: async (action) => {
+      calls.push(action);
+      return {};
+    },
+  };
+  const policy = {
+    decide: async () => ({
+      status: 'action',
+      operation: 'TAP',
+      action: { type: 'tap-element', elementId: 'ui.0' },
+      label: 'Tap 重庆.',
+    }),
+  };
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'search for a place',
+    execute: true,
+    maxSteps: 8,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+  });
+  assert.equal(result.status, 'stuck');
+  assert.equal(calls.length, 1);
+});
+
 test('a run that would wait forever on a dead network opens the settings app once', async () => {
   const { device, calls } = fakeDevice();
   const offline = { internet: false, wifiOn: false, saved: 3 };
