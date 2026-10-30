@@ -11,6 +11,8 @@ export default [
       '**/artifacts/**',
       '**/next-env.d.ts',
       'coverage/**',
+      // Scratch: the TLA+ work directory and the exploration's broken variants.
+      'tmp/**',
     ],
   },
   js.configs.recommended,

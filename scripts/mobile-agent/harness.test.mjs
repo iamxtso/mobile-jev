@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
-import { summarizeState } from './device.mjs';
+import { MutationUncertainError, summarizeState } from './device.mjs';
 import { candidatesFor, runAgent } from './agent.mjs';
 import { encodePng } from './pixels.mjs';
 test('nested identical scroll regions produce one candidate per direction', () => {
@@ -551,6 +551,47 @@ test('a long press that changes nothing is tried again, held longer', async () =
     calls.map((call) => call.duration),
     [1200],
   );
+});
+
+test('a longer hold whose outcome is unknown ends the run instead of being swallowed', async () => {
+  const calls = [];
+  const asks = [];
+  const raw = state();
+  const device = {
+    assertReady: async () => {},
+    observe: async () => summarizeState(raw, 'phone'),
+    act: async (action) => {
+      calls.push(action);
+      // The first press lands and draws nothing; the escalated press lands and the answer never comes.
+      if (calls.length > 1) throw new MutationUncertainError('ADB mutation outcome is uncertain.');
+      return {};
+    },
+  };
+  const policy = {
+    decide: async () => {
+      asks.push(true);
+      return {
+        status: 'action',
+        operation: 'LONG_PRESS',
+        action: { type: 'long-press', elementId: 'ui.0' },
+        confidence: 0.95,
+      };
+    },
+  };
+  await assert.rejects(
+    () =>
+      runAgent({
+        device,
+        policy,
+        goal: 'Leave screen cleaning mode',
+        execute: true,
+        maxSteps: 2,
+      }),
+    /uncertain/,
+  );
+  // Nothing is sent after a press that may have landed, and the model is not asked to decide again.
+  assert.equal(calls.length, 2);
+  assert.equal(asks.length, 1);
 });
 
 test('a run that would wait forever on a dead network opens the settings app once', async () => {

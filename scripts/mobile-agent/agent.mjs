@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { StaleObservationError } from './device.mjs';
+import { MutationUncertainError, StaleObservationError } from './device.mjs';
 import { describeAction } from './actions.mjs';
 
 // A read that carries only the system's own window: the dock, the status bar, the launcher. The app the
@@ -833,8 +833,11 @@ export async function runAgent({
         entry.screenChanged =
           entry.screenChanged || Boolean(recheck?.control || recheck?.elsewhere);
         entry.after = after.fingerprint;
-      } catch {
-        // Keep the original verdict: the control may be gone, and that is not this step's failure.
+      } catch (error) {
+        // A press refused before input is not evidence either way: the control may be gone, and that is
+        // not this step's failure. A press whose input may have landed is, and this is the one place the
+        // loop used to swallow it.
+        if (error instanceof MutationUncertainError) throw error;
         entry.holdRefused = true;
       }
     }

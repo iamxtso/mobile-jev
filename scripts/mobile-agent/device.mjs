@@ -23,6 +23,8 @@ const DRAG_VECTORS = { LEFT: [-0.35, 0], RIGHT: [0.35, 0], UP: [0, -0.3], DOWN: 
 const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
 
 export class StaleObservationError extends Error {}
+/** A mutation was sent and its outcome never arrived, so it must not be sent again. */
+export class MutationUncertainError extends Error {}
 
 // The network does not change between two steps of one run, and each read costs three adb calls.
 const NETWORK_TTL_MS = 1500;
@@ -784,7 +786,9 @@ export class AdbDevice {
       return bytes;
     } catch (error) {
       if (mutation)
-        throw new Error('ADB mutation outcome is uncertain; the action was not retried.');
+        throw new MutationUncertainError(
+          'ADB mutation outcome is uncertain; the action was not retried.',
+        );
       // The device's own words are the only way to tell a launching app ("could not get idle state")
       // from a dead connection, which need opposite handling.
       // `uiautomator` reports its own failures on stdout, not stderr, so read both.
