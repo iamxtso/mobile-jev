@@ -75,6 +75,47 @@ function targetMeaning(observation, id) {
   });
 }
 
+/**
+ * What a control reads as, with the positional part of its ids taken out: two rows of a list that look
+ * the same to a person read the same here, which `targetMeaning` cannot say because it compares one id
+ * against itself.
+ */
+function readAlike(observation, id) {
+  const target = observation.elements.find((element) => element.id === id);
+  if (!target) return null;
+  const { id: _, bounds: __, ...rest } = target;
+  return JSON.stringify({
+    ...rest,
+    content: observation.elements
+      .filter((element) => element.id.startsWith(`${id}.`))
+      .map(({ id: _childId, ...child }) => child),
+  });
+}
+
+/**
+ * A positional id names a node in one read only. When a row above the target appears or disappears, the
+ * same id lands on a neighbour, and if that neighbour reads exactly like the decision's target, no
+ * comparison of what a control *is* can tell them apart: `targetMeaning` drops the box on purpose, so
+ * a control that moved is still the same control. Refuse only in that case, the target moved and a
+ * second node now reads like it. A unique control may move, and a static row that has a twin may stay.
+ */
+function ambiguousMove(current, expected, id) {
+  const at = current.elements.find((element) => element.id === id);
+  const was = expected.elements.find((element) => element.id === id);
+  if (!at?.bounds || !was?.bounds) return false;
+  if (
+    at.bounds.left === was.bounds.left &&
+    at.bounds.top === was.bounds.top &&
+    at.bounds.right === was.bounds.right &&
+    at.bounds.bottom === was.bounds.bottom
+  )
+    return false;
+  const reads = readAlike(current, id);
+  return current.elements.some(
+    (element) => element.id !== id && readAlike(current, element.id) === reads,
+  );
+}
+
 export function assertFresh(current, expected, action, maxAgeMs = 30_000) {
   if (
     !expected ||
@@ -96,9 +137,11 @@ export function assertFresh(current, expected, action, maxAgeMs = 30_000) {
     action.type === 'tap-element' ||
     (action.elementId && ['long-press', 'double-tap', 'drag'].includes(action.type));
   if (onElement) {
+    const decidedOn = targetMeaning(expected, action.elementId);
     fresh =
-      targetMeaning(expected, action.elementId) !== null &&
-      targetMeaning(current, action.elementId) === targetMeaning(expected, action.elementId);
+      decidedOn !== null &&
+      targetMeaning(current, action.elementId) === decidedOn &&
+      !ambiguousMove(current, expected, action.elementId);
   } else if (['type', 'clear', 'key'].includes(action.type) && expected.phone.inputElementId) {
     const id = expected.phone.inputElementId;
     fresh =

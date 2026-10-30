@@ -39,11 +39,11 @@ const anchors = [
     id: 'the-gate-compares-the-target',
     file: 'device.mjs',
     about:
-      'a stale decision is one whose control, text or bounds moved, which is what the double redraws',
+      'a stale decision is one whose control or text moved, or whose target can no longer be told apart from the row that took its place',
     holds: (text) =>
       /\n\s+label,\n\s+resourceId,\n\s+editable,\n\s+enabled,\n\s+checked,\n\s+selected,\n/.test(
         text,
-      ),
+      ) && text.includes('!ambiguousMove(current, expected, action.elementId)'),
   },
   {
     id: 'open-app-skips-the-gate',
