@@ -131,12 +131,13 @@ Not verified, and not implied by a pass:
 
 Coverage record — the verification describes these, and nothing else:
 
-| verified                                                                            | at        |
-| ----------------------------------------------------------------------------------- | --------- |
-| `scripts/testcases.mjs`: `recordResult`, `previousRuns`, the summary/resume readers | `ad21b37` |
-| `scripts/mobile-agent/testcase-suite.mjs`: `oneLinePerCase`                         | `ad21b37` |
+| verified                                                                                    | at        |
+| ------------------------------------------------------------------------------------------- | --------- |
+| `scripts/testcases.mjs`: `recordResult`, `previousRuns`, `load`, the summary/resume readers | `a2bc11f` |
+| `scripts/mobile-agent/testcase-suite.mjs`: `oneLinePerCase`, `casesFromRows`                | `a2bc11f` |
+| `scripts/testcases.test.mjs`, `scripts/mobile-agent/testcase-suite.test.mjs`                | `a2bc11f` |
 
-`ad21b37` is the commit at which this was last confirmed to describe the code. When a change touches
+`a2bc11f` is the commit at which this was last confirmed to describe the code. When a change touches
 those functions, run the script before publishing; if it passes unchanged, and the anchors agree, move
 the commit forward to the change that was confirmed. If it does not pass, the verification needs
 another look — see `/maintain-formal-verification-skill` for that pass.
