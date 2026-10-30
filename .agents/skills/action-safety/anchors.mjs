@@ -112,7 +112,7 @@ const anchors = [
     id: 'the-double-replaces-the-whole-act',
     file: 'device.mjs',
     about:
-      'one `act` is one resolution and one dispatch, which is what one `act` of the double answers',
+      'one `act` is one resolution and one dispatch, which is what the double answers; a double-tap sends two taps inside that one act and is not modelled',
     holds: (text) => text.includes('async act(action, context = {}) {\n    return resolveAction('),
   },
 ];

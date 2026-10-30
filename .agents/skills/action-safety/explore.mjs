@@ -41,6 +41,7 @@ const DEVICE = 'emulator-explored';
 const KINDS = [
   'applied', // the input lands and the screen changes
   'noop', // the input lands and the screen does not change
+  'twitch', // the input lands, and something else on the screen redraws on its own
   'stale', // another window redraws before the freshness gate, so the decision is refused
   'refused', // the gate passes but the target is gone, so nothing is sent
   'uncertain', // the input lands and the connection drops before the answer arrives
@@ -58,6 +59,7 @@ const MAX_STEPS = 2;
 const plain = {
   applied: 'the input landed and the screen changed',
   noop: 'the input landed and the screen did not change',
+  twitch: 'the input landed, and a card elsewhere on the screen redrew on its own',
   stale: 'another window redrew first, so the decision was stale before input',
   refused: 'the target was gone, so nothing was sent',
   uncertain: 'the input landed and the connection dropped before the answer arrived',
@@ -65,9 +67,10 @@ const plain = {
   'read-fails': 'the input landed and every read after it failed',
 };
 
-// The phone this replaces, as `summarizeState` reads it. A revision is one screen; a chrome read is
-// the system's own window, which says nothing about what the app just did.
-function rawState(revision, chrome) {
+// The phone this replaces, as `summarizeState` reads it. A revision is the state of the control the
+// actions target; `tips` is everything else, which on a real launcher rotates on its own. A chrome read
+// is the system's own window, which says nothing about what the app just did.
+function rawState(revision, chrome, tips = 0) {
   const app = 'com.example.notes';
   const row = {
     className: 'android.widget.TextView',
@@ -97,6 +100,17 @@ function rawState(revision, chrome) {
               isClickable: false,
             }
           : { ...row, text: `Note ${revision}` },
+        ...(tips
+          ? [
+              {
+                ...row,
+                text: `Try saying: navigate home ${tips}`,
+                resourceId: `${app}:id/tips`,
+                isClickable: false,
+                boundsInScreen: { left: 20, top: 1400, right: 700, bottom: 1500 },
+              },
+            ]
+          : []),
       ],
     },
   };
@@ -117,14 +131,17 @@ function loadApi(dir) {
 
 /** The device double: reads are real observations, and `act` is the one place input leaves the loop. */
 function phone(api, schedule, actionType) {
-  const state = { revision: 0, chrome: false, readFaults: 0, acts: 0 };
+  const state = { revision: 0, tips: 0, chrome: false, readFaults: 0, acts: 0 };
   const trace = [];
   const read = (why) => {
     if (state.readFaults > 0) {
       state.readFaults--;
       throw new Error('ADB read failed: uiautomator dump returned no XML.');
     }
-    const observation = api.summarizeState(rawState(state.revision, state.chrome), DEVICE);
+    const observation = api.summarizeState(
+      rawState(state.revision, state.chrome, state.tips),
+      DEVICE,
+    );
     state.chrome = false;
     trace.push({ at: 'read', why, revision: state.revision, fingerprint: observation.fingerprint });
     return observation;
@@ -181,6 +198,9 @@ function phone(api, schedule, actionType) {
       } else if (kind === 'unknown-read') {
         state.revision++;
         state.chrome = true;
+      } else if (kind === 'twitch') {
+        // A card elsewhere redraws: the screen moved, the control the action names did not.
+        state.tips++;
       } else {
         state.revision++;
       }

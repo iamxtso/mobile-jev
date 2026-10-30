@@ -77,7 +77,9 @@ function tapPoint(action, observation) {
 
 /** The bounds of the control a tap lands on, or null when it lands on nothing observed. */
 function tapTarget(action, observation) {
-  if (action?.type === 'tap-element') {
+  // Every gesture that names a control is remembered by that control. Only a point that names none falls
+  // back to the screen, where a card that redraws on its own would make the same press look new.
+  if (['tap-element', 'long-press', 'double-tap'].includes(action?.type) && action.elementId) {
     const node = observation.elements.find((element) => element.id === action.elementId);
     return node
       ? { elementId: node.id, bounds: node.bounds, className: node.className }

@@ -1064,3 +1064,61 @@ test('a repeated tap that changes nothing says why the run stopped', async () =>
   assert.equal(result.status, 'stuck');
   assert.match(result.decision.reason, /repeated TAP on Tap 重庆\./);
 });
+
+test('a hold is remembered by its control, not by a card that redraws on its own', async () => {
+  // The launcher rotates a tips card every few seconds. The control under the press does not change, so
+  // the same hold is a repeat, not a new action.
+  const base = summarizeState(state(), 'phone');
+  const row = {
+    ...base.elements[0],
+    id: 'ui.0',
+    text: 'Note',
+    label: '',
+    resourceId: 'com.example.notes:id/row',
+    clickable: true,
+    bounds: { left: 20, top: 300, right: 700, bottom: 420 },
+  };
+  const card = {
+    ...row,
+    id: 'ui.1',
+    text: 'Try saying: navigate home',
+    resourceId: 'com.example.notes:id/tips',
+    clickable: false,
+    bounds: { left: 20, top: 1400, right: 700, bottom: 1500 },
+  };
+  let tips = 0;
+  const calls = [];
+  const device = {
+    assertReady: async () => {},
+    observe: async () => ({
+      ...base,
+      fingerprint: `screen-${tips}`,
+      elements: tips ? [row, card] : [row],
+    }),
+    act: async (action) => {
+      calls.push(action);
+      tips++;
+      return {};
+    },
+  };
+  const policy = {
+    decide: async () => ({
+      status: 'action',
+      operation: 'LONG_PRESS',
+      action: { type: 'long-press', elementId: 'ui.0' },
+      label: 'Hold Note.',
+    }),
+  };
+  const result = await runAgent({
+    device,
+    policy,
+    goal: 'Open the note',
+    execute: true,
+    maxSteps: 4,
+    settleMs: 0,
+    settleTimeoutMs: 0,
+  });
+  // The escalation to a longer hold is a different action and is allowed; a second identical hold is not.
+  assert.equal(calls.filter((action) => !action.duration).length, 1);
+  assert.notEqual(result.status, 'step_limit');
+});
